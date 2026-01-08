@@ -7,7 +7,7 @@ from firebase_admin import credentials, firestore
 import pytz
 
 # --- 0. KONFIGURACJA ---
-st.set_page_config(page_title="Panel Admina", layout="wide")
+st.set_page_config(page_title="Panel Admina - Statystyki", layout="wide", page_icon="📊")
 
 # --- INICJALIZACJA BAZY DANYCH ---
 try:
@@ -49,7 +49,8 @@ col1, col2, col3 = st.columns(3)
 with col1:
     time_range = st.selectbox("Zakres czasu:", ["Dziś", "Ostatnie 7 dni", "Ostatnie 30 dni (Global)"])
 with col2:
-    OPERATORS = ["Wszyscy", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
+    # Zaktualizowana lista o Martę
+    OPERATORS = ["Wszyscy", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"]
     selected_operator = st.selectbox("Operator:", OPERATORS)
 with col3:
     st.write("") 
@@ -79,8 +80,10 @@ dates_list = get_dates_to_fetch(time_range)
 
 # --- POBIERANIE DANYCH Z BAZY ---
 total_sessions_sum = 0
-operator_stats = {} 
-transitions_stats = {} 
+total_diamonds_sum = 0
+operator_stats = {} # {operator: liczba_sesji}
+operator_diamonds = {} # {operator: liczba_diamentów}
+transitions_stats = {} # {przejscie: liczba}
 
 progress_bar = st.progress(0)
 
@@ -102,25 +105,32 @@ for i, date_str in enumerate(dates_list):
             total_sessions_sum += sessions
             operator_stats[op_name] = operator_stats.get(op_name, 0) + sessions
             
-            # 2. Sumowanie przejść PZ (INTELIGENTNE)
-            # Sprawdzamy oba możliwe formaty zapisu w bazie
-            
-            # Opcja A: Zagnieżdżona mapa ("pz_transitions": {"A_to_B": 1})
-            if "pz_transitions" in data and isinstance(data["pz_transitions"], dict):
-                for key, count in data["pz_transitions"].items():
+            # 2. Sumowanie przejść PZ i Diamentów (do PZ6)
+            # Sprawdzamy Opcję A (mapa)
+            transitions_map = data.get("pz_transitions", {})
+            if isinstance(transitions_map, dict):
+                for key, count in transitions_map.items():
+                    # Zliczanie ogólne przejść
                     clean_key = key.replace("_to_", " ➡ ")
                     transitions_stats[clean_key] = transitions_stats.get(clean_key, 0) + count
+                    
+                    # Zliczanie DIAMENTÓW (wszystko co kończy się na PZ6)
+                    if key.endswith("_to_PZ6"):
+                        operator_diamonds[op_name] = operator_diamonds.get(op_name, 0) + count
+                        total_diamonds_sum += count
             
-            # Opcja B: Płaskie klucze ("pz_transitions.A_to_B": 1)
-            # Przeszukujemy wszystkie klucze w dokumencie
+            # Sprawdzamy Opcję B (płaskie klucze z kropką)
             for key, val in data.items():
                 if key.startswith("pz_transitions."):
-                    # Wyciągamy samą nazwę przejścia (usuwamy prefiks)
                     trans_name = key.split("pz_transitions.")[1]
-                    clean_key = trans_name.replace("_to_", " ➡ ")
-                    # Upewniamy się, że wartość to liczba
                     count = val if isinstance(val, (int, float)) else 0
+                    
+                    clean_key = trans_name.replace("_to_", " ➡ ")
                     transitions_stats[clean_key] = transitions_stats.get(clean_key, 0) + count
+                    
+                    if trans_name.endswith("_to_PZ6"):
+                        operator_diamonds[op_name] = operator_diamonds.get(op_name, 0) + count
+                        total_diamonds_sum += count
                 
     except Exception:
         pass
@@ -130,20 +140,33 @@ progress_bar.empty()
 # --- PREZENTACJA DANYCH ---
 
 st.markdown("---")
-st.metric(label=f"Łączna liczba zamkniętych sesji ({time_range})", value=total_sessions_sum)
+m1, m2 = st.columns(2)
+m1.metric(label=f"Łączna liczba sesji ({time_range})", value=total_sessions_sum)
+m2.metric(label=f"Łączna liczba Diamentów 💎 (PZ6)", value=total_diamonds_sum)
 
+st.markdown("---")
 col_charts1, col_charts2 = st.columns(2)
 
 with col_charts1:
-    st.subheader("🏆 Aktywność Operatorów")
-    if operator_stats:
-        df_ops = pd.DataFrame(list(operator_stats.items()), columns=['Operator', 'Sesje'])
-        df_ops = df_ops.sort_values(by='Sesje', ascending=False)
-        st.dataframe(df_ops, use_container_width=True, hide_index=True)
+    st.subheader("🏆 Aktywność i Diamenty")
+    
+    # Tworzymy tabelę zbiorczą dla operatorów
+    combined_data = []
+    for op in OPERATORS:
+        if op == "Wszyscy": continue
+        sesje = operator_stats.get(op, 0)
+        diamenty = operator_diamonds.get(op, 0)
+        if sesje > 0 or diamenty > 0:
+            combined_data.append({"Operator": op, "Sesje": sesje, "Diamenty 💎": diamenty})
+    
+    if combined_data:
+        df_combined = pd.DataFrame(combined_data).sort_values(by='Diamenty 💎', ascending=False)
+        st.dataframe(df_combined, use_container_width=True, hide_index=True)
+        
         if selected_operator == "Wszyscy":
-            st.bar_chart(df_ops.set_index('Operator'))
+            st.bar_chart(df_combined.set_index('Operator')['Diamenty 💎'])
     else:
-        st.info("Brak danych o sesjach.")
+        st.info("Brak danych o aktywności.")
 
 with col_charts2:
     st.subheader("📈 Postęp Spraw (Przejścia PZ)")
@@ -158,4 +181,5 @@ with col_charts2:
 
 with st.expander("🔍 Podgląd surowych danych (Debug)"):
     st.write(f"Analizowane daty: {dates_list}")
-    st.write("Znalezione przejścia:", transitions_stats)
+    st.write("Słownik diamentów:", operator_diamonds)
+    st.write("Słownik przejść:", transitions_stats)
