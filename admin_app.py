@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
+import pytz
 
 # --- 0. KONFIGURACJA ---
 st.set_page_config(page_title="Panel Admina", layout="wide")
@@ -11,6 +12,7 @@ st.set_page_config(page_title="Panel Admina", layout="wide")
 # --- INICJALIZACJA BAZY DANYCH ---
 try:
     if not firebase_admin._apps:
+        # Pobieramy te same kredencjały co w Szturchaczu
         creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
         creds = credentials.Certificate(creds_dict)
         firebase_admin.initialize_app(creds)
@@ -39,88 +41,124 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# 📊 PANEL STATYSTYK
+# 📊 LOGIKA I INTERFEJS
 # ==========================================
 st.title("📊 Panel Statystyk Operatorów")
 
 # --- FILTRY ---
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
-    time_range = st.selectbox("Zakres czasu:", ["Dziś", "Ostatnie 7 dni", "Cała historia"])
+    time_range = st.selectbox("Zakres czasu:", ["Dziś", "Ostatnie 7 dni", "Ostatnie 30 dni (Global)"])
 with col2:
-    # Pobieramy listę operatorów z kodu (można też z bazy, ale tak szybciej)
     OPERATORS = ["Wszyscy", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
     selected_operator = st.selectbox("Operator:", OPERATORS)
+with col3:
+    st.write("") # Odstęp
+    if st.button("🔄 Odśwież dane", type="primary"):
+        st.rerun()
 
-# --- LOGIKA POBIERANIA DANYCH ---
-def get_dates_in_range(range_type):
+# --- USTALANIE DAT (CZAS PL) ---
+def get_dates_to_fetch(range_option):
+    tz_pl = pytz.timezone('Europe/Warsaw')
+    today = datetime.now(tz_pl)
     dates = []
-    today = datetime.now()
-    if range_type == "Dziś":
+    
+    if range_option == "Dziś":
         dates.append(today.strftime("%Y-%m-%d"))
-    elif range_type == "Ostatnie 7 dni":
+    elif range_option == "Ostatnie 7 dni":
         for i in range(7):
-            date = today - timedelta(days=i)
-            dates.append(date.strftime("%Y-%m-%d"))
-    elif range_type == "Cała historia":
-        # Pobieramy kolekcje (dni) z bazy - to uproszczenie, pobieramy ostatnie 30 dni dla wydajności
-        # W prawdziwej "całej historii" trzeba by iterować inaczej
+            d = today - timedelta(days=i)
+            dates.append(d.strftime("%Y-%m-%d"))
+    elif range_option == "Ostatnie 30 dni (Global)":
         for i in range(30):
-            date = today - timedelta(days=i)
-            dates.append(date.strftime("%Y-%m-%d"))
+            d = today - timedelta(days=i)
+            dates.append(d.strftime("%Y-%m-%d"))
+            
     return dates
 
-dates_to_fetch = get_dates_in_range(time_range)
+dates_list = get_dates_to_fetch(time_range)
 
-# --- AGREGACJA DANYCH ---
-total_sessions = 0
-operator_stats = {} # {operator: sessions}
-transitions_stats = {} # {transition: count}
+# --- POBIERANIE DANYCH Z BAZY ---
+total_sessions_sum = 0
+operator_stats = {} # {operator: liczba_sesji}
+transitions_stats = {} # {przejscie: liczba}
 
-with st.spinner("Pobieranie danych..."):
-    for date_str in dates_to_fetch:
-        try:
-            operators_ref = db.collection("stats").document(date_str).collection("operators").stream()
+# Pasek postępu (dla dłuższego zakresu dat)
+progress_bar = st.progress(0)
+status_text = st.empty()
+
+for i, date_str in enumerate(dates_list):
+    progress_bar.progress((i + 1) / len(dates_list))
+    
+    try:
+        # Pobieramy kolekcję operatorów dla danego dnia
+        docs = db.collection("stats").document(date_str).collection("operators").stream()
+        
+        for doc in docs:
+            op_name = doc.id
+            data = doc.to_dict()
             
-            for doc in operators_ref:
-                op_name = doc.id
-                data = doc.to_dict()
+            # FILTR OPERATORA
+            if selected_operator != "Wszyscy" and op_name != selected_operator:
+                continue
+            
+            # 1. Sumowanie sesji
+            sessions = data.get("sessions_completed", 0)
+            total_sessions_sum += sessions
+            
+            # Dodajemy do rankingu operatorów
+            operator_stats[op_name] = operator_stats.get(op_name, 0) + sessions
+            
+            # 2. Sumowanie przejść PZ
+            # Struktura w bazie: { "pz_transitions": { "PZ_START_to_PZ0": 1 } }
+            transitions_map = data.get("pz_transitions", {})
+            for key, count in transitions_map.items():
+                # Zamiana klucza "PZ_START_to_PZ0" na ładny tekst
+                clean_key = key.replace("_to_", " ➡ ")
+                transitions_stats[clean_key] = transitions_stats.get(clean_key, 0) + count
                 
-                # Filtr operatora
-                if selected_operator != "Wszyscy" and op_name != selected_operator:
-                    continue
-                
-                # Zliczanie sesji
-                sessions = data.get("sessions_completed", 0)
-                total_sessions += sessions
-                operator_stats[op_name] = operator_stats.get(op_name, 0) + sessions
-                
-                # Zliczanie przejść PZ
-                if "pz_transitions" in data:
-                    for trans, count in data["pz_transitions"].items():
-                        clean_trans = trans.replace("_to_", " → ")
-                        transitions_stats[clean_trans] = transitions_stats.get(clean_trans, 0) + count
-                        
-        except Exception:
-            pass # Ignorujemy dni bez danych
+    except Exception:
+        # Ignorujemy dni, w których nie ma jeszcze bazy (np. przyszłość)
+        pass
 
-# --- WYŚWIETLANIE WYNIKÓW ---
+status_text.empty()
+progress_bar.empty()
+
+# --- PREZENTACJA DANYCH ---
 
 st.markdown("---")
-st.metric("Łączna liczba sesji", total_sessions)
 
-# 1. Wykres sesji (tylko jeśli wybrano "Wszyscy")
-if selected_operator == "Wszyscy" and operator_stats:
-    st.subheader("Ranking Operatorów")
-    df_ops = pd.DataFrame(list(operator_stats.items()), columns=['Operator', 'Sesje']).sort_values(by='Sesje', ascending=False)
-    st.bar_chart(df_ops.set_index('Operator'))
-    st.dataframe(df_ops, use_container_width=True)
+# METRYKA GŁÓWNA
+st.metric(label=f"Łączna liczba zamkniętych sesji ({time_range})", value=total_sessions_sum)
 
-# 2. Statystyki przejść PZ
-st.subheader("Analiza Przejść PZ (Postęp Spraw)")
-if transitions_stats:
-    df_trans = pd.DataFrame(list(transitions_stats.items()), columns=['Przejście', 'Liczba']).sort_values(by='Liczba', ascending=False)
-    st.dataframe(df_trans, use_container_width=True)
-    st.bar_chart(df_trans.set_index('Przejście'))
-else:
-    st.info("Brak danych o przejściach PZ dla wybranych kryteriów.")
+col_charts1, col_charts2 = st.columns(2)
+
+# WYKRES 1: RANKING OPERATORÓW (Tylko jeśli wybrano "Wszyscy")
+with col_charts1:
+    st.subheader("🏆 Aktywność Operatorów")
+    if operator_stats:
+        df_ops = pd.DataFrame(list(operator_stats.items()), columns=['Operator', 'Sesje'])
+        df_ops = df_ops.sort_values(by='Sesje', ascending=False)
+        st.dataframe(df_ops, use_container_width=True, hide_index=True)
+    else:
+        st.info("Brak danych o sesjach.")
+
+# WYKRES 2: PRZEJŚCIA PZ
+with col_charts2:
+    st.subheader("📈 Postęp Spraw (Przejścia PZ)")
+    if transitions_stats:
+        df_trans = pd.DataFrame(list(transitions_stats.items()), columns=['Przejście', 'Liczba'])
+        df_trans = df_trans.sort_values(by='Liczba', ascending=False)
+        
+        # Wykres słupkowy
+        st.bar_chart(df_trans.set_index('Przejście'))
+        
+        # Tabela pod wykresem
+        st.dataframe(df_trans, use_container_width=True, hide_index=True)
+    else:
+        st.info("Brak zarejestrowanych przejść PZ w wybranym okresie.")
+
+# Debugger surowych danych (opcjonalnie dla admina)
+with st.expander("🔍 Podgląd surowych danych (Debug)"):
+    st.write("Sprawdzane daty:", dates_list)
+    st.write("Znalezione przejścia:", transitions_stats)
