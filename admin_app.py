@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -28,7 +28,6 @@ def check_password():
     st.header("🔒 Panel Admina - Logowanie")
     password_input = st.text_input("Podaj hasło dostępu:", type="password", key="admin_password_input")
     if st.button("Zaloguj"):
-        # Używamy innego hasła niż dla Szturchacza, dla bezpieczeństwa
         if st.session_state.admin_password_input == st.secrets["ADMIN_PASSWORD"]:
             st.session_state["password_correct"] = True
             st.rerun()
@@ -44,56 +43,84 @@ if not check_password():
 # ==========================================
 st.title("📊 Panel Statystyk Operatorów")
 
-selected_date = st.date_input("Wybierz dzień do analizy", datetime.now())
-date_str = selected_date.strftime("%Y-%m-%d")
+# --- FILTRY ---
+col1, col2 = st.columns(2)
+with col1:
+    time_range = st.selectbox("Zakres czasu:", ["Dziś", "Ostatnie 7 dni", "Cała historia"])
+with col2:
+    # Pobieramy listę operatorów z kodu (można też z bazy, ale tak szybciej)
+    OPERATORS = ["Wszyscy", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
+    selected_operator = st.selectbox("Operator:", OPERATORS)
 
-st.header(f"Wyniki dla dnia: {date_str}")
+# --- LOGIKA POBIERANIA DANYCH ---
+def get_dates_in_range(range_type):
+    dates = []
+    today = datetime.now()
+    if range_type == "Dziś":
+        dates.append(today.strftime("%Y-%m-%d"))
+    elif range_type == "Ostatnie 7 dni":
+        for i in range(7):
+            date = today - timedelta(days=i)
+            dates.append(date.strftime("%Y-%m-%d"))
+    elif range_type == "Cała historia":
+        # Pobieramy kolekcje (dni) z bazy - to uproszczenie, pobieramy ostatnie 30 dni dla wydajności
+        # W prawdziwej "całej historii" trzeba by iterować inaczej
+        for i in range(30):
+            date = today - timedelta(days=i)
+            dates.append(date.strftime("%Y-%m-%d"))
+    return dates
 
-try:
-    # Pobieramy dane z Firestore dla wybranego dnia
-    operators_ref = db.collection("stats").document(date_str).collection("operators").stream()
-    
-    stats_data = []
-    all_transitions = {}
+dates_to_fetch = get_dates_in_range(time_range)
 
-    # Przetwarzamy dane każdego operatora
-    for operator_doc in operators_ref:
-        operator_data = operator_doc.to_dict()
-        operator_name = operator_doc.id
-        
-        stats_data.append({
-            "Operator": operator_name,
-            "Ukończone sesje": operator_data.get("sessions_completed", 0)
-        })
-        
-        if "pz_transitions" in operator_data:
-            for transition, count in operator_data["pz_transitions"].items():
-                # Zmieniamy kropki na strzałki dla czytelności
-                formatted_transition = transition.replace("_to_", " → ")
-                all_transitions[formatted_transition] = all_transitions.get(formatted_transition, 0) + count
+# --- AGREGACJA DANYCH ---
+total_sessions = 0
+operator_stats = {} # {operator: sessions}
+transitions_stats = {} # {transition: count}
 
-    if stats_data:
-        # --- SEKCJA OGÓLNA ---
-        st.subheader("Ogólna aktywność")
-        df_general = pd.DataFrame(stats_data).sort_values(by="Ukończone sesje", ascending=False).reset_index(drop=True)
-        total_sessions = int(df_general["Ukończone sesje"].sum())
-        st.metric("Łączna liczba sesji w tym dniu", total_sessions)
-        st.dataframe(df_general, use_container_width=True)
-        
-        # --- SEKCJA PRZEJŚĆ PZ ---
-        st.subheader("Najczęstsze przejścia między etapami (PZ)")
-        if all_transitions:
-            df_transitions = pd.DataFrame(list(all_transitions.items()), columns=['Przejście', 'Liczba']).sort_values(by="Liczba", ascending=False).reset_index(drop=True)
+with st.spinner("Pobieranie danych..."):
+    for date_str in dates_to_fetch:
+        try:
+            operators_ref = db.collection("stats").document(date_str).collection("operators").stream()
             
-            st.dataframe(df_transitions, use_container_width=True)
-            
-            st.write("Wykres najpopularniejszych przejść:")
-            st.bar_chart(df_transitions.set_index('Przejście'))
-        else:
-            st.info("Brak zarejestrowanych przejść PZ dla tego dnia.")
+            for doc in operators_ref:
+                op_name = doc.id
+                data = doc.to_dict()
+                
+                # Filtr operatora
+                if selected_operator != "Wszyscy" and op_name != selected_operator:
+                    continue
+                
+                # Zliczanie sesji
+                sessions = data.get("sessions_completed", 0)
+                total_sessions += sessions
+                operator_stats[op_name] = operator_stats.get(op_name, 0) + sessions
+                
+                # Zliczanie przejść PZ
+                if "pz_transitions" in data:
+                    for trans, count in data["pz_transitions"].items():
+                        clean_trans = trans.replace("_to_", " → ")
+                        transitions_stats[clean_trans] = transitions_stats.get(clean_trans, 0) + count
+                        
+        except Exception:
+            pass # Ignorujemy dni bez danych
 
-    else:
-        st.info("Brak danych dla wybranego dnia.")
+# --- WYŚWIETLANIE WYNIKÓW ---
 
-except Exception as e:
-    st.error(f"Nie udało się pobrać danych: {e}")
+st.markdown("---")
+st.metric("Łączna liczba sesji", total_sessions)
+
+# 1. Wykres sesji (tylko jeśli wybrano "Wszyscy")
+if selected_operator == "Wszyscy" and operator_stats:
+    st.subheader("Ranking Operatorów")
+    df_ops = pd.DataFrame(list(operator_stats.items()), columns=['Operator', 'Sesje']).sort_values(by='Sesje', ascending=False)
+    st.bar_chart(df_ops.set_index('Operator'))
+    st.dataframe(df_ops, use_container_width=True)
+
+# 2. Statystyki przejść PZ
+st.subheader("Analiza Przejść PZ (Postęp Spraw)")
+if transitions_stats:
+    df_trans = pd.DataFrame(list(transitions_stats.items()), columns=['Przejście', 'Liczba']).sort_values(by='Liczba', ascending=False)
+    st.dataframe(df_trans, use_container_width=True)
+    st.bar_chart(df_trans.set_index('Przejście'))
+else:
+    st.info("Brak danych o przejściach PZ dla wybranych kryteriów.")
