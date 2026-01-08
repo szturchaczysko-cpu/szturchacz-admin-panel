@@ -12,7 +12,6 @@ st.set_page_config(page_title="Panel Admina", layout="wide")
 # --- INICJALIZACJA BAZY DANYCH ---
 try:
     if not firebase_admin._apps:
-        # Pobieramy te same kredencjały co w Szturchaczu
         creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
         creds = credentials.Certificate(creds_dict)
         firebase_admin.initialize_app(creds)
@@ -53,7 +52,7 @@ with col2:
     OPERATORS = ["Wszyscy", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
     selected_operator = st.selectbox("Operator:", OPERATORS)
 with col3:
-    st.write("") # Odstęp
+    st.write("") 
     if st.button("🔄 Odśwież dane", type="primary"):
         st.rerun()
 
@@ -80,85 +79,83 @@ dates_list = get_dates_to_fetch(time_range)
 
 # --- POBIERANIE DANYCH Z BAZY ---
 total_sessions_sum = 0
-operator_stats = {} # {operator: liczba_sesji}
-transitions_stats = {} # {przejscie: liczba}
+operator_stats = {} 
+transitions_stats = {} 
 
-# Pasek postępu (dla dłuższego zakresu dat)
 progress_bar = st.progress(0)
-status_text = st.empty()
 
 for i, date_str in enumerate(dates_list):
     progress_bar.progress((i + 1) / len(dates_list))
     
     try:
-        # Pobieramy kolekcję operatorów dla danego dnia
         docs = db.collection("stats").document(date_str).collection("operators").stream()
         
         for doc in docs:
             op_name = doc.id
             data = doc.to_dict()
             
-            # FILTR OPERATORA
             if selected_operator != "Wszyscy" and op_name != selected_operator:
                 continue
             
             # 1. Sumowanie sesji
             sessions = data.get("sessions_completed", 0)
             total_sessions_sum += sessions
-            
-            # Dodajemy do rankingu operatorów
             operator_stats[op_name] = operator_stats.get(op_name, 0) + sessions
             
-            # 2. Sumowanie przejść PZ
-            # Struktura w bazie: { "pz_transitions": { "PZ_START_to_PZ0": 1 } }
-            transitions_map = data.get("pz_transitions", {})
-            for key, count in transitions_map.items():
-                # Zamiana klucza "PZ_START_to_PZ0" na ładny tekst
-                clean_key = key.replace("_to_", " ➡ ")
-                transitions_stats[clean_key] = transitions_stats.get(clean_key, 0) + count
+            # 2. Sumowanie przejść PZ (INTELIGENTNE)
+            # Sprawdzamy oba możliwe formaty zapisu w bazie
+            
+            # Opcja A: Zagnieżdżona mapa ("pz_transitions": {"A_to_B": 1})
+            if "pz_transitions" in data and isinstance(data["pz_transitions"], dict):
+                for key, count in data["pz_transitions"].items():
+                    clean_key = key.replace("_to_", " ➡ ")
+                    transitions_stats[clean_key] = transitions_stats.get(clean_key, 0) + count
+            
+            # Opcja B: Płaskie klucze ("pz_transitions.A_to_B": 1)
+            # Przeszukujemy wszystkie klucze w dokumencie
+            for key, val in data.items():
+                if key.startswith("pz_transitions."):
+                    # Wyciągamy samą nazwę przejścia (usuwamy prefiks)
+                    trans_name = key.split("pz_transitions.")[1]
+                    clean_key = trans_name.replace("_to_", " ➡ ")
+                    # Upewniamy się, że wartość to liczba
+                    count = val if isinstance(val, (int, float)) else 0
+                    transitions_stats[clean_key] = transitions_stats.get(clean_key, 0) + count
                 
     except Exception:
-        # Ignorujemy dni, w których nie ma jeszcze bazy (np. przyszłość)
         pass
 
-status_text.empty()
 progress_bar.empty()
 
 # --- PREZENTACJA DANYCH ---
 
 st.markdown("---")
-
-# METRYKA GŁÓWNA
 st.metric(label=f"Łączna liczba zamkniętych sesji ({time_range})", value=total_sessions_sum)
 
 col_charts1, col_charts2 = st.columns(2)
 
-# WYKRES 1: RANKING OPERATORÓW (Tylko jeśli wybrano "Wszyscy")
 with col_charts1:
     st.subheader("🏆 Aktywność Operatorów")
     if operator_stats:
         df_ops = pd.DataFrame(list(operator_stats.items()), columns=['Operator', 'Sesje'])
         df_ops = df_ops.sort_values(by='Sesje', ascending=False)
         st.dataframe(df_ops, use_container_width=True, hide_index=True)
+        if selected_operator == "Wszyscy":
+            st.bar_chart(df_ops.set_index('Operator'))
     else:
         st.info("Brak danych o sesjach.")
 
-# WYKRES 2: PRZEJŚCIA PZ
 with col_charts2:
     st.subheader("📈 Postęp Spraw (Przejścia PZ)")
     if transitions_stats:
         df_trans = pd.DataFrame(list(transitions_stats.items()), columns=['Przejście', 'Liczba'])
         df_trans = df_trans.sort_values(by='Liczba', ascending=False)
         
-        # Wykres słupkowy
-        st.bar_chart(df_trans.set_index('Przejście'))
-        
-        # Tabela pod wykresem
         st.dataframe(df_trans, use_container_width=True, hide_index=True)
+        st.bar_chart(df_trans.set_index('Przejście'))
     else:
         st.info("Brak zarejestrowanych przejść PZ w wybranym okresie.")
 
-# Debugger surowych danych (opcjonalnie dla admina)
 with st.expander("🔍 Podgląd surowych danych (Debug)"):
-    st.write("Sprawdzane daty:", dates_list)
+    st.write(f"Analizowane daty: {dates_list}")
     st.write("Znalezione przejścia:", transitions_stats)
