@@ -44,7 +44,7 @@ if not check_password():
 # ==========================================
 tab_stats, tab_config = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja Operatorów"])
 
-# Lista operatorów (ujednolicona)
+# Lista operatorów (zgodna z app.py)
 OPERATORS = ["Wszyscy", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"]
 
 # --- ZAKŁADKA 1: STATYSTYKI ---
@@ -94,10 +94,7 @@ with tab_stats:
                 operator_stats[op_name] = operator_stats.get(op_name, 0) + sessions
                 
                 # Przejścia i Diamenty (PZ6)
-                # Obsługa obu formatów zapisu (zagnieżdżony i płaski)
                 trans_map = data.get("pz_transitions", {})
-                
-                # 1. Sprawdź mapę zagnieżdżoną
                 if isinstance(trans_map, dict):
                     for key, count in trans_map.items():
                         clean_key = key.replace("_to_", " ➡ ")
@@ -106,7 +103,7 @@ with tab_stats:
                             operator_diamonds[op_name] = operator_diamonds.get(op_name, 0) + count
                             total_diamonds_sum += count
                 
-                # 2. Sprawdź pola płaskie (pz_transitions.X_to_Y)
+                # Obsługa płaskich kluczy (backup)
                 for key, val in data.items():
                     if key.startswith("pz_transitions."):
                         trans_name = key.split("pz_transitions.")[1]
@@ -136,9 +133,8 @@ with tab_stats:
         
         if ranking_list:
             df_ranking = pd.DataFrame(ranking_list).sort_values(by='Diamenty 💎', ascending=False)
+            # Używamy st.table zamiast st.dataframe jeśli błąd importu modułu nadal występuje
             st.dataframe(df_ranking, use_container_width=True, hide_index=True)
-            if selected_operator == "Wszyscy":
-                st.bar_chart(df_ranking.set_index('Operator')['Diamenty 💎'])
         else:
             st.info("Brak danych dla tego okresu.")
 
@@ -153,9 +149,8 @@ with tab_stats:
 # --- ZAKŁADKA 2: KONFIGURACJA ---
 with tab_config:
     st.title("⚙️ Zarządzanie Operatorami")
-    st.write("Ustawienia zapisane tutaj zostaną automatycznie wczytane przez Szturchacza po wybraniu imienia operatora.")
-
-    selected_op_to_config = st.selectbox("Wybierz operatora do edycji:", OPERATORS[1:]) # Bez "Wszyscy"
+    
+    selected_op_to_config = st.selectbox("Wybierz operatora do edycji:", OPERATORS[1:]) 
     
     # Pobierz aktualny config z bazy
     op_cfg_ref = db.collection("operator_configs").document(selected_op_to_config)
@@ -165,15 +160,21 @@ with tab_config:
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Parametry Techniczne")
-            key_choice = st.number_input("Przypisany klucz API (0 = Rotator, 1-5 = Stały)", 0, 5, value=current_cfg.get("assigned_key_index", 0))
+            # PRZYWRÓCONE POLE KLUCZA
+            key_choice = st.number_input("Przypisany klucz API (0 = Rotator, 1-5 = Stały)", 
+                                         min_value=0, max_value=5, 
+                                         value=int(current_cfg.get("assigned_key_index", 0)))
             
             roles = ["Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"]
             current_role = current_cfg.get("role", "Operatorzy_DE")
-            role_choice = st.selectbox("Rola w prompcie:", roles, index=roles.index(current_role) if current_role in roles else 0)
+            role_choice = st.selectbox("Rola w prompcie:", roles, 
+                                       index=roles.index(current_role) if current_role in roles else 0)
         
         with c2:
             st.subheader("Komunikacja")
-            admin_msg = st.text_area("Wiadomość dla operatora (widoczna w Szturchaczu):", value=current_cfg.get("admin_message", ""), height=150, placeholder="Np. 'Dzisiaj skupiamy się na sprawach z Francji'...")
+            admin_msg = st.text_area("Wiadomość dla operatora (widoczna w Szturchaczu):", 
+                                     value=current_cfg.get("admin_message", ""), 
+                                     height=150)
         
         if st.form_submit_button("💾 Zapisz i wyślij konfigurację"):
             op_cfg_ref.set({
@@ -183,7 +184,7 @@ with tab_config:
                 "updated_at": firestore.SERVER_TIMESTAMP
             }, merge=True)
             st.success(f"✅ Konfiguracja dla {selected_op_to_config} została zapisana!")
-            st.balloons()
+            st.rerun()
 
 # Debugger surowych danych
 with st.expander("🔍 Debugger bazy danych"):
