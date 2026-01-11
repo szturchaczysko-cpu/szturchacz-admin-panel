@@ -3,3 +3,4 @@ firebase-admin
 pandas
 pytz
 pyarrow
+streamlit-cookies-manager
