@@ -67,9 +67,7 @@ with tab_stats:
     elif date_mode == "Kalendarz":
         dates_list = [st.date_input("Wybierz dzień:", today).strftime("%Y-%m-%d")]
     else:
-        # All Time - pobieramy wszystkie unikalne daty z bazy
         with st.spinner("Pobieranie historii dat..."):
-            # Pobieramy dokumenty bezpośrednio, list_documents() jest pewniejsze dla "wirtualnych" ścieżek
             all_stats_refs = db.collection("stats").list_documents()
             dates_list = [doc.id for doc in all_stats_refs]
 
@@ -83,7 +81,6 @@ with tab_stats:
         progress_bar = st.progress(0)
         for i, d_s in enumerate(dates_list):
             progress_bar.progress((i + 1) / len(dates_list))
-            # Pobieramy wszystkich operatorów dla danej daty
             docs = db.collection("stats").document(d_s).collection("operators").stream()
             for doc in docs:
                 name = doc.id
@@ -97,19 +94,20 @@ with tab_stats:
                 total_sessions += s_count
                 
                 t_map = data.get("pz_transitions", {})
-                for k, v in t_map.items():
-                    clean_k = k.replace("_to_", " ➡ ")
-                    all_transitions[clean_k] = all_transitions.get(clean_k, 0) + v
-                    if k.endswith("_to_PZ6"):
-                        op_stats_map[name]['d'] += v
-                        total_diamonds += v
+                if isinstance(t_map, dict):
+                    for k, v in t_map.items():
+                        clean_k = k.replace("_to_", " ➡ ")
+                        all_transitions[clean_k] = all_transitions.get(clean_k, 0) + v
+                        if k.endswith("_to_PZ6"):
+                            op_stats_map[name]['d'] += v
+                            total_diamonds += v
         progress_bar.empty()
 
     # --- WYŚWIETLANIE ---
     st.markdown("---")
     m1, m2 = st.columns(2)
     m1.metric("Łączna liczba sesji", total_sessions)
-    m2.metric("Łączna liczba Diamentów 💎", total_diamonds)
+    m2.metric("Łączna liczba Diamentów 💎 (PZ6)", total_diamonds)
 
     st.markdown("---")
     c_left, c_right = st.columns(2)
@@ -122,7 +120,7 @@ with tab_stats:
             st.dataframe(df_ranking, use_container_width=True, hide_index=True)
             st.bar_chart(df_ranking.set_index("Operator")["Sesje"])
         else:
-            st.info("Brak danych dla wybranych filtrów.")
+            st.info("Brak danych.")
 
     with c_right:
         st.subheader("📈 Przejścia PZ (Postęp)")
@@ -131,37 +129,30 @@ with tab_stats:
             st.dataframe(df_tr, use_container_width=True, hide_index=True)
             st.bar_chart(df_tr.set_index("Przejście")["Ilość"])
         else:
-            st.info("Brak danych o przejściach.")
+            st.info("Brak danych.")
 
 # ==========================================
 # ⚙️ ZAKŁADKA 2: KONFIGURACJA
 # ==========================================
 with tab_config:
     st.title("⚙️ Zarządzanie Operatorami")
-    
-    # Wybór operatora odświeża dane poniżej
     sel_op = st.selectbox("Wybierz operatora do edycji:", OPERATORS, key="op_selector")
     
-    # Pobranie aktualnych danych z bazy
     cfg_ref = db.collection("operator_configs").document(sel_op)
     cfg = cfg_ref.get().to_dict() or {}
 
-    # Status odczytu
     is_read = cfg.get("message_read", False)
     st.write(f"Status wiadomości: {'✅ Odczytano' if is_read else '🔴 Oczekuje'}")
 
-    # Formularz z unikalnym kluczem dla każdego operatora, aby Streamlit nie gubił danych
     with st.form(key=f"form_{sel_op}"):
         col_a, col_b = st.columns(2)
         with col_a:
             new_pwd = st.text_input("Hasło logowania:", value=cfg.get("password", ""))
             key_idx = st.number_input("Klucz API (0=Auto, 1-5=Stały)", 0, 5, value=int(cfg.get("assigned_key_index", 0)))
-            
             roles = ["Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"]
             cur_role = cfg.get("role", "Operatorzy_DE")
             role_idx = roles.index(cur_role) if cur_role in roles else 0
-            role_sel = st.selectbox("Rola w prompcie:", roles, index=role_idx)
-        
+            role_sel = st.selectbox("Rola:", roles, index=role_idx)
         with col_b:
             new_msg = st.text_area("Wiadomość dla operatora:", value=cfg.get("admin_message", ""), height=150)
         
@@ -169,7 +160,7 @@ with tab_config:
             msg_changed = new_msg != cfg.get("admin_message", "")
             cfg_ref.set({
                 "password": new_pwd,
-                "assigned_key_index": key_idx,
+                "assigned_key_index": key_choice if 'key_choice' in locals() else key_idx,
                 "role": role_sel,
                 "admin_message": new_msg,
                 "message_read": False if msg_changed else is_read,
@@ -185,15 +176,7 @@ with tab_keys:
     st.title("🔑 Monitor Zużycia Kluczy")
     today_str = today.strftime("%Y-%m-%d")
     key_stats = db.collection("key_usage").document(today_str).get().to_dict() or {}
-    
-    k_data = []
-    for i in range(1, 6):
-        usage = key_stats.get(str(i), 0)
-        k_data.append({"Klucz": f"Klucz {i}", "Zużycie": usage, "Limit": 250})
-    
+    k_data = [{"Klucz": f"Klucz {i}", "Zużycie": key_stats.get(str(i), 0), "Limit": 250} for i in range(1, 6)]
     df_keys = pd.DataFrame(k_data)
     st.bar_chart(df_keys.set_index("Klucz")["Zużycie"])
     st.table(df_keys)
-
-with st.expander("🔍 Debugger bazy"):
-    st.write("Znalezione daty w stats:", dates_list)
