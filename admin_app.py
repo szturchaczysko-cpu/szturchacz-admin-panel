@@ -11,9 +11,12 @@ st.set_page_config(page_title="Szturchacz - Admin Hub", layout="wide", page_icon
 
 # --- INICJALIZACJA BAZY ---
 if not firebase_admin._apps:
-    creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
-    creds = credentials.Certificate(creds_dict)
-    firebase_admin.initialize_app(creds)
+    try:
+        creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
+        creds = credentials.Certificate(creds_dict)
+        firebase_admin.initialize_app(creds)
+    except Exception as e:
+        st.error(f"Błąd połącznia z bazą: {e}")
 db = firestore.client()
 
 # --- BRAMKA HASŁA ---
@@ -38,7 +41,6 @@ if not check_password(): st.stop()
 # 📑 ZAKŁADKI
 # ==========================================
 tab_stats, tab_config, tab_keys = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja", "🔑 Stan Kluczy"])
-
 OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"]
 
 # ==========================================
@@ -55,8 +57,7 @@ with tab_stats:
         selected_op = st.selectbox("Filtruj operatora:", ["Wszyscy"] + OPERATORS)
     with col_f3:
         st.write("")
-        if st.button("🔄 Odśwież dane", type="primary"):
-            st.rerun()
+        if st.button("🔄 Odśwież dane", type="primary"): st.rerun()
 
     # --- USTALANIE LISTY DAT ---
     dates_list = []
@@ -71,51 +72,59 @@ with tab_stats:
             all_stats_refs = db.collection("stats").list_documents()
             dates_list = [doc.id for doc in all_stats_refs]
 
-    # --- POBIERANIE I AGREGACJA DANYCH ---
+    # --- POBIERANIE I AGREGACJA ---
     total_sessions = 0
     total_diamonds = 0
     op_summary = {} # {name: {'s': 0, 'd': 0}}
-    all_transitions = {} # {transition_name: count}
+    all_transitions = {}
 
     if dates_list:
         progress_bar = st.progress(0)
         for i, d_s in enumerate(dates_list):
             progress_bar.progress((i + 1) / len(dates_list))
-            
-            # Pobieramy dokumenty operatorów dla konkretnej daty
             docs = db.collection("stats").document(d_s).collection("operators").stream()
             
             for doc in docs:
                 name = doc.id
-                # Filtr operatora
-                if selected_op != "Wszyscy" and name != selected_op:
-                    continue
+                if selected_op != "Wszyscy" and name != selected_op: continue
                 
                 data = doc.to_dict()
+                if name not in op_summary: op_summary[name] = {'s': 0, 'd': 0}
                 
                 # 1. Sesje
                 s_count = data.get("sessions_completed", 0)
+                op_summary[name]['s'] += s_count
                 total_sessions += s_count
                 
-                if name not in op_summary:
-                    op_summary[name] = {'s': 0, 'd': 0}
-                op_summary[name]['s'] += s_count
-                
-                # 2. Przejścia PZ i Diamenty
-                t_map = data.get("pz_transitions", {})
-                if isinstance(t_map, dict):
-                    for k, v in t_map.items():
-                        # Nazwa przejścia do wyświetlenia
-                        display_name = k.replace("_to_", " ➡ ")
-                        all_transitions[display_name] = all_transitions.get(display_name, 0) + v
-                        
-                        # Liczenie diamentów (koniec na PZ6)
-                        if k.endswith("_to_PZ6"):
-                            op_summary[name]['d'] += v
-                            total_diamonds += v
+                # 2. Przejścia i Diamenty (PANCERNY PARSER)
+                # Sprawdzamy wszystkie pola w dokumencie
+                for key, val in data.items():
+                    trans_key = ""
+                    count = 0
+                    
+                    # Wariant A: Zagnieżdżona mapa {"pz_transitions": {"A_to_B": 5}}
+                    if key == "pz_transitions" and isinstance(val, dict):
+                        for t_name, t_count in val.items():
+                            trans_key = t_name
+                            count = t_count
+                            display_name = trans_key.replace("_to_", " ➡ ")
+                            all_transitions[display_name] = all_transitions.get(display_name, 0) + count
+                            if trans_key.endswith("_to_PZ6"):
+                                op_summary[name]['d'] += count
+                                total_diamonds += count
+                                
+                    # Wariant B: Płaskie pole {"pz_transitions.A_to_B": 5}
+                    elif key.startswith("pz_transitions."):
+                        trans_key = key.split("pz_transitions.")[1]
+                        count = val if isinstance(val, (int, float)) else 0
+                        display_name = trans_key.replace("_to_", " ➡ ")
+                        all_transitions[display_name] = all_transitions.get(display_name, 0) + count
+                        if trans_key.endswith("_to_PZ6"):
+                            op_summary[name]['d'] += count
+                            total_diamonds += count
         progress_bar.empty()
 
-    # --- PREZENTACJA WYNIKÓW ---
+    # --- WYŚWIETLANIE ---
     st.markdown("---")
     m1, m2 = st.columns(2)
     m1.metric("Łączna liczba sesji", total_sessions)
@@ -127,31 +136,19 @@ with tab_stats:
     with c_left:
         st.subheader("🏆 Ranking Operatorów")
         if op_summary:
-            ranking_data = []
-            for name, vals in op_summary.items():
-                ranking_data.append({
-                    "Operator": name,
-                    "Sesje": vals['s'],
-                    "Diamenty 💎": vals['d']
-                })
+            ranking_data = [{"Operator": k, "Sesje": v['s'], "Diamenty 💎": v['d']} for k, v in op_summary.items()]
             df_ranking = pd.DataFrame(ranking_data).sort_values(by="Diamenty 💎", ascending=False)
             st.dataframe(df_ranking, use_container_width=True, hide_index=True)
-            
-            # Wykres sesji
             st.bar_chart(df_ranking.set_index("Operator")["Sesje"])
-        else:
-            st.info("Brak danych dla wybranych filtrów.")
+        else: st.info("Brak danych.")
 
     with c_right:
         st.subheader("📈 Przejścia PZ (Postęp)")
         if all_transitions:
             df_tr = pd.DataFrame(list(all_transitions.items()), columns=['Przejście', 'Ilość']).sort_values(by='Ilość', ascending=False)
             st.dataframe(df_tr, use_container_width=True, hide_index=True)
-            
-            # Wykres przejść
             st.bar_chart(df_tr.set_index("Przejście")["Ilość"])
-        else:
-            st.info("Brak danych o przejściach.")
+        else: st.info("Brak danych.")
 
 # ==========================================
 # ⚙️ ZAKŁADKA 2: KONFIGURACJA
@@ -159,56 +156,42 @@ with tab_stats:
 with tab_config:
     st.title("⚙️ Zarządzanie Systemem")
     
-    # --- USTAWIENIA GLOBALNE ---
-    st.subheader("🌐 Ustawienia Globalne")
+    # Ustawienia Globalne
     global_ref = db.collection("admin_config").document("global_settings")
     global_cfg = global_ref.get().to_dict() or {"show_diamonds": True}
-    
     toggle_diamonds = st.toggle("Pokazuj diamenty operatorom w Szturchaczu", value=global_cfg.get("show_diamonds", True))
     if toggle_diamonds != global_cfg.get("show_diamonds"):
         global_ref.set({"show_diamonds": toggle_diamonds}, merge=True)
-        st.toast("Zmieniono widoczność diamentów!")
+        st.rerun()
 
     st.markdown("---")
-    
-    # --- USTAWIENIA OPERATORÓW ---
-    st.subheader("👤 Indywidualne Ustawienia")
     sel_op = st.selectbox("Wybierz operatora do edycji:", OPERATORS, key="op_cfg_sel")
-    
     cfg_ref = db.collection("operator_configs").document(sel_op)
     cfg = cfg_ref.get().to_dict() or {}
 
-    with st.form(key=f"form_v2_{sel_op}"):
+    with st.form(key=f"form_v3_{sel_op}"):
         col_a, col_b = st.columns(2)
         with col_a:
             new_pwd = st.text_input("Hasło logowania:", value=cfg.get("password", ""))
             key_idx = st.number_input("Klucz API (0=Auto, 1-5=Stały)", 0, 5, value=int(cfg.get("assigned_key_index", 0)))
-            
             app_files = ["app.py", "app2.py", "app_test.py"]
-            current_file = cfg.get("app_file", "app.py")
-            new_app_file = st.selectbox("Plik aplikacji (Router):", app_files, index=app_files.index(current_file) if current_file in app_files else 0)
-            
+            cur_file = cfg.get("app_file", "app.py")
+            new_app_file = st.selectbox("Plik aplikacji:", app_files, index=app_files.index(cur_file) if cur_file in app_files else 0)
             roles = ["Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"]
             cur_role = cfg.get("role", "Operatorzy_DE")
             role_sel = st.selectbox("Rola:", roles, index=roles.index(cur_role) if cur_role in roles else 0)
-        
         with col_b:
             new_msg = st.text_area("Wiadomość dla operatora:", value=cfg.get("admin_message", ""), height=150)
             st.write(f"Status odczytu: {'✅ Odczytano' if cfg.get('message_read', False) else '🔴 Nieodczytano'}")
         
-        if st.form_submit_button("💾 Zapisz i wyślij"):
-            # Jeśli wiadomość się zmieniła, resetujemy status odczytu
-            msg_changed = new_msg != cfg.get("admin_message", "")
+        if st.form_submit_button("💾 Zapisz ustawienia"):
             cfg_ref.set({
-                "password": new_pwd,
-                "assigned_key_index": key_idx,
-                "role": role_sel,
-                "admin_message": new_msg,
-                "app_file": new_app_file,
-                "message_read": False if msg_changed else cfg.get("message_read", False),
+                "password": new_pwd, "assigned_key_index": key_idx, "role": role_sel,
+                "admin_message": new_msg, "app_file": new_app_file,
+                "message_read": False if new_msg != cfg.get("admin_message", "") else cfg.get("message_read", False),
                 "updated_at": firestore.SERVER_TIMESTAMP
             }, merge=True)
-            st.success(f"Zapisano zmiany dla {sel_op}!")
+            st.success("Zapisano!")
             st.rerun()
 
 # ==========================================
@@ -216,14 +199,7 @@ with tab_config:
 # ==========================================
 with tab_keys:
     st.title("🔑 Monitor Zużycia Kluczy")
-    today_str = today.strftime("%Y-%m-%d")
-    key_stats = db.collection("key_usage").document(today_str).get().to_dict() or {}
-    
-    k_data = []
-    for i in range(1, 6):
-        usage = key_stats.get(str(i), 0)
-        k_data.append({"Klucz": f"Klucz {i}", "Zużycie": usage, "Limit": 250})
-    
-    df_keys = pd.DataFrame(k_data)
-    st.bar_chart(df_keys.set_index("Klucz")["Zużycie"])
-    st.table(df_keys)
+    key_stats = db.collection("key_usage").document(today.strftime("%Y-%m-%d")).get().to_dict() or {}
+    k_data = [{"Klucz": f"Klucz {i}", "Zużycie": key_stats.get(str(i), 0), "Limit": 250} for i in range(1, 6)]
+    st.bar_chart(pd.DataFrame(k_data).set_index("Klucz")["Zużycie"])
+    st.table(pd.DataFrame(k_data))
