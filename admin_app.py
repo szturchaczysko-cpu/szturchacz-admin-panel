@@ -29,7 +29,7 @@ def check_password():
 if not check_password(): st.stop()
 
 tab_stats, tab_config, tab_keys = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja", "🔑 Stan Kluczy"])
-OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"]
+OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta", "EwelinaG", "Andrzej"]
 
 # ==========================================
 # 📊 ZAKŁADKA 1: STATYSTYKI
