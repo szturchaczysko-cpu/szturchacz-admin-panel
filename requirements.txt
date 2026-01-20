@@ -4,3 +4,4 @@ pandas
 pytz
 pyarrow
 streamlit-cookies-manager
+google-cloud-aiplatform
