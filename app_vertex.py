@@ -74,7 +74,7 @@ all_time_diamonds = global_data.get("total_diamonds", 0)
 
 # --- MAPA MODELI VERTEX AI (OSTATECZNE NAZWY) ---
 MODEL_MAP = {
-    "Gemini 1.5 Pro (Zalecany)": "gemini-1.5-pro",
+    "Gemini 1.5 Pro (Zalecany)": "gemini-2.5-pro",
     "Gemini 1.5 Flash (Szybki)": "gemini-1.5-flash",
     "Gemini 2.0 Flash Exp": "gemini-2.0-flash-exp"
 }
