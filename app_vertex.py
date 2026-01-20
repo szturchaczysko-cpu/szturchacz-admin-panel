@@ -35,15 +35,15 @@ if 'vertex_init' not in st.session_state:
 # --- FUNKCJE STATYSTYK ---
 def parse_pz(text):
     if not text: return None
-    match = re.search(r'COP#\s*PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
+    # Szuka PZ+cyfra (np. PZ0, PZ12, PZ=PZ5)
+    match = re.search(r'(PZ\d+)', text, re.IGNORECASE)
     if match: return match.group(1).upper()
     return None
 
 def log_stats(op_name, start_pz, end_pz):
     tz_pl = pytz.timezone('Europe/Warsaw')
-    now_pl = datetime.now(tz_pl)
-    today = now_pl.strftime("%Y-%m-%d")
-    time_str = now_pl.strftime("%H:%M")
+    today = datetime.now(tz_pl).strftime("%Y-%m-%d")
+    time_str = datetime.now(tz_pl).strftime("%H:%M")
     doc_ref = db.collection("stats").document(today).collection("operators").document(op_name)
     upd = {
         "sessions_completed": firestore.Increment(1),
@@ -72,9 +72,9 @@ today_diamonds = sum(v for k, v in today_data.get("pz_transitions", {}).items() 
 global_data = db.collection("global_stats").document("totals").collection("operators").document(op_name).get().to_dict() or {}
 all_time_diamonds = global_data.get("total_diamonds", 0)
 
-# --- MAPA MODELI VERTEX AI (OSTATECZNE NAZWY) ---
+# Modele Vertex AI
 MODEL_MAP = {
-    "Gemini 1.5 Pro (Zalecany)": "gemini-2.5-pro",
+    "Gemini 1.5 Pro (Zalecany)": "gemini-1.5-pro",
     "Gemini 1.5 Flash (Szybki)": "gemini-1.5-flash",
     "Gemini 2.0 Flash Exp": "gemini-2.0-flash-exp"
 }
@@ -103,8 +103,13 @@ with st.sidebar:
             with st.expander("📩 Poprzednia wiadomość"): st.write(admin_msg)
 
     st.markdown("---")
-    st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     active_model_id = MODEL_MAP[st.session_state.selected_model_label]
+    
+    # --- PRZYWRÓCONE PARAMETRY V21 ---
+    st.subheader("🧪 Funkcje Eksperymentalne")
+    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val")
+    st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val")
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
     st.markdown("---")
@@ -131,10 +136,22 @@ st.title(f"🤖 Szturchacz (Vertex AI)")
 if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
+    # !!! POBIERANIE PROMPTU V21 !!!
     SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT_V21"]
     
-    # Parametry V21
-    parametry_startowe = f"\ndomyslny_operator={op_name}\ndomyslna_data={datetime.now(tz_pl).strftime('%d.%m')}\nGrupa_Operatorska={cfg.get('role', 'Operatorzy_DE')}\ndomyslny_tryb={wybrany_tryb_kod}\nnotag=NIE\nanalizbior=NIE"
+    # Konwersja przełączników na TAK/NIE
+    p_notag = "TAK" if st.session_state.notag_val else "NIE"
+    p_analizbior = "TAK" if st.session_state.analizbior_val else "NIE"
+    
+    parametry_startowe = f"""
+# PARAMETRY STARTOWE
+domyslny_operator={op_name}
+domyslna_data={datetime.now(tz_pl).strftime('%d.%m')}
+Grupa_Operatorska={cfg.get('role', 'Operatorzy_DE')}
+domyslny_tryb={wybrany_tryb_kod}
+notag={p_notag}
+analizbior={p_analizbior}
+"""
     FULL_PROMPT = SYSTEM_PROMPT + parametry_startowe
 
     # Inicjalizacja modelu
@@ -149,6 +166,10 @@ else:
 
     if len(st.session_state.messages) == 0:
         st.subheader(f"📥 Pierwszy wsad ({op_name})")
+        if wybrany_tryb_kod != "od_szturchacza":
+            st.warning(f"💡 Tryb {st.session_state.tryb_label}: Wklej Tabelkę + Kopertę + Rolkę.")
+            st.code(f"ROLKA_START_{wybrany_tryb_kod}")
+
         wsad_input = st.text_area("Wklej dane tutaj:", height=350)
         if st.button("🚀 Rozpocznij analizę", type="primary"):
             if wsad_input:
@@ -158,7 +179,9 @@ else:
                     try:
                         response = model.generate_content(wsad_input, generation_config={"temperature": 0.0})
                         st.session_state.messages.append({"role": "model", "content": response.text})
-                        log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END")
+                        # Logowanie statystyk (obsługa notag=TAK)
+                        if (';pz=' in response.text.lower() or 'cop#' in response.text.lower()) and 'c#' in response.text.lower():
+                            log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Błąd Vertex AI: {e}")
@@ -178,7 +201,7 @@ else:
                         response = chat.send_message(prompt, generation_config={"temperature": 0.0})
                         st.markdown(response.text)
                         st.session_state.messages.append({"role": "model", "content": response.text})
-                        if 'cop#' in response.text.lower() and 'c#' in response.text.lower():
+                        if (';pz=' in response.text.lower() or 'cop#' in response.text.lower()) and 'c#' in response.text.lower():
                             log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END")
                     except Exception as e:
                         st.error(f"Błąd: {e}")
