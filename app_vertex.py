@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 import locale, time, json, re, pytz, hashlib, random
 import firebase_admin
 from firebase_admin import credentials, firestore
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # --- 0. KONFIGURACJA ŚRODOWISKA ---
-# Nie wywołujemy st.set_page_config, bo Router (app.py) już to zrobił.
 try: locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
@@ -17,7 +17,7 @@ except: pass
 db = globals().get('db')
 cookies = globals().get('cookies')
 
-# Inicjalizacja Vertex AI przy użyciu pliku JSON z sekretów
+# Inicjalizacja Vertex AI
 if 'vertex_init' not in st.session_state:
     try:
         creds_info = json.loads(st.secrets["FIREBASE_CREDS"])
@@ -35,16 +35,8 @@ if 'vertex_init' not in st.session_state:
 # --- FUNKCJE STATYSTYK ---
 def parse_pz(text):
     if not text: return None
-    match = re.search(r'(PZ\d+)', text, re.IGNORECASE)
+    match = re.search(r'COP#\s*PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
     if match: return match.group(1).upper()
-    return None
-
-def get_pz_value(pz_string):
-    if pz_string == "PZ_START": return -1
-    if pz_string == "PZ_END": return 999
-    if pz_string and pz_string.startswith("PZ"):
-        try: return int(pz_string[2:])
-        except: return None
     return None
 
 def log_stats(op_name, start_pz, end_pz):
@@ -64,28 +56,15 @@ def log_stats(op_name, start_pz, end_pz):
     doc_ref.set(upd, merge=True)
 
 # ==========================================
-# 🔑 CONFIG I MODELE
+# 🔑 CONFIG I DIAMENTY
 # ==========================================
 op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
 
-# MAPA MODELI DLA VERTEX AI (Poprawione nazwy!)
-MODEL_MAP = {
-    "Gemini 1.5 Pro (Zalecany)": "gemini-1.5-pro-002",
-    "Gemini 1.5 Flash (Szybki)": "gemini-1.5-flash-002",
-    "Gemini 2.0 Flash Exp": "gemini-2.0-flash-exp"
-}
-
-if "messages" not in st.session_state: st.session_state.messages = []
-if "chat_started" not in st.session_state: st.session_state.chat_started = False
-if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
-
-# Pobieranie ustawień globalnych (Diamenty)
 global_cfg = db.collection("admin_config").document("global_settings").get().to_dict() or {}
 show_diamonds_globally = global_cfg.get("show_diamonds", True)
 
-# Pobieranie danych diamentów dla sidebaru
 tz_pl = pytz.timezone('Europe/Warsaw')
 today_s = datetime.now(tz_pl).strftime("%Y-%m-%d")
 today_data = db.collection("stats").document(today_s).collection("operators").document(op_name).get().to_dict() or {}
@@ -93,10 +72,21 @@ today_diamonds = sum(v for k, v in today_data.get("pz_transitions", {}).items() 
 global_data = db.collection("global_stats").document("totals").collection("operators").document(op_name).get().to_dict() or {}
 all_time_diamonds = global_data.get("total_diamonds", 0)
 
+# --- MAPA MODELI VERTEX AI (OSTATECZNE NAZWY) ---
+MODEL_MAP = {
+    "Gemini 1.5 Pro (Zalecany)": "gemini-1.5-pro",
+    "Gemini 1.5 Flash (Szybki)": "gemini-1.5-flash",
+    "Gemini 2.0 Flash Exp": "gemini-2.0-flash-exp"
+}
+
+if "messages" not in st.session_state: st.session_state.messages = []
+if "chat_started" not in st.session_state: st.session_state.chat_started = False
+if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
+
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title(f"👤 {op_name} (VERTEX)")
-    st.success("🚀 Silnik: VERTEX AI (No Limit)")
+    st.title(f"👤 {op_name}")
+    st.success(f"🚀 VERTEX AI: {st.secrets['GCP_LOCATION']}")
     
     if show_diamonds_globally:
         st.markdown(f"### 💎 Zamówieni kurierzy\n**Dziś:** {today_diamonds} | **Łącznie:** {all_time_diamonds}")
@@ -108,15 +98,13 @@ with st.sidebar:
         if st.button("✅ Odczytałem"):
             cfg_ref.update({"message_read": True})
             st.rerun()
+    else:
+        if admin_msg:
+            with st.expander("📩 Poprzednia wiadomość"): st.write(admin_msg)
 
     st.markdown("---")
     st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     active_model_id = MODEL_MAP[st.session_state.selected_model_label]
-    
-    # --- NOWE PARAMETRY V21 ---
-    st.subheader("🧪 Funkcje Eksperymentalne")
-    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val")
-    st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val")
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
     st.markdown("---")
@@ -143,35 +131,20 @@ st.title(f"🤖 Szturchacz (Vertex AI)")
 if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
-    # !!! POBIERANIE PROMPTU V21 !!!
     SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT_V21"]
     
     # Parametry V21
-    p_notag = "TAK" if st.session_state.notag_val else "NIE"
-    p_analizbior = "TAK" if st.session_state.analizbior_val else "NIE"
-    
-    parametry_startowe = f"""
-# PARAMETRY STARTOWE
-domyslny_operator={op_name}
-domyslna_data={datetime.now(tz_pl).strftime('%d.%m')}
-Grupa_Operatorska={cfg.get('role', 'Operatorzy_DE')}
-domyslny_tryb={wybrany_tryb_kod}
-notag={p_notag}
-analizbior={p_analizbior}
-"""
+    parametry_startowe = f"\ndomyslny_operator={op_name}\ndomyslna_data={datetime.now(tz_pl).strftime('%d.%m')}\nGrupa_Operatorska={cfg.get('role', 'Operatorzy_DE')}\ndomyslny_tryb={wybrany_tryb_kod}\nnotag=NIE\nanalizbior=NIE"
     FULL_PROMPT = SYSTEM_PROMPT + parametry_startowe
 
-    # Inicjalizacja modelu Vertex
+    # Inicjalizacja modelu
     model = GenerativeModel(active_model_id, system_instruction=FULL_PROMPT)
 
-    # Funkcja konwertująca historię na format Vertex
     def get_vertex_history():
         vertex_history = []
         for m in st.session_state.messages[:-1]:
             role = "user" if m["role"] == "user" else "model"
-            vertex_history.append(
-                Content(role=role, parts=[Part.from_text(m["content"])])
-            )
+            vertex_history.append(Content(role=role, parts=[Part.from_text(m["content"])]))
         return vertex_history
 
     if len(st.session_state.messages) == 0:
@@ -185,9 +158,7 @@ analizbior={p_analizbior}
                     try:
                         response = model.generate_content(wsad_input, generation_config={"temperature": 0.0})
                         st.session_state.messages.append({"role": "model", "content": response.text})
-                        # Logowanie statystyk
-                        if (';pz=' in response.text.lower() or 'cop#' in response.text.lower()) and 'c#' in response.text.lower():
-                            log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END")
+                        log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Błąd Vertex AI: {e}")
@@ -207,7 +178,7 @@ analizbior={p_analizbior}
                         response = chat.send_message(prompt, generation_config={"temperature": 0.0})
                         st.markdown(response.text)
                         st.session_state.messages.append({"role": "model", "content": response.text})
-                        if (';pz=' in response.text.lower() or 'cop#' in response.text.lower()) and 'c#' in response.text.lower():
+                        if 'cop#' in response.text.lower() and 'c#' in response.text.lower():
                             log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END")
                     except Exception as e:
                         st.error(f"Błąd: {e}")
