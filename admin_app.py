@@ -160,7 +160,7 @@ with tab_config:
         with col_a:
             new_pwd = st.text_input("Hasło logowania:", value=cfg.get("password", ""))
             key_idx = st.number_input("Klucz API (0=Auto, 1-5=Stały)", 0, 5, value=int(cfg.get("assigned_key_index", 0)))
-            app_files = ["app.py", "app2.py", "app_test.py"]
+            app_files = ["app.py", "app2.py", "app_vertex.py", "app_test.py"]
             cur_file = cfg.get("app_file", "app.py")
             new_app_file = st.selectbox("Plik aplikacji:", app_files, index=app_files.index(cur_file) if cur_file in app_files else 0)
             roles = ["Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"]
