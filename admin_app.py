@@ -34,7 +34,11 @@ def check_password():
 
 if not check_password(): st.stop()
 
-tab_stats, tab_config, tab_keys = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja", "🔑 Stan Kluczy"])
+# ==========================================
+# 📑 ZAKŁADKI
+# ==========================================
+tab_stats, tab_config, tab_keys = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja Operatorów", "🔑 Stan Kluczy"])
+
 OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"]
 
 # ==========================================
@@ -175,17 +179,38 @@ with tab_config:
     cfg_ref = db.collection("operator_configs").document(sel_op)
     cfg = cfg_ref.get().to_dict() or {}
 
-    with st.form(key=f"form_v5_{sel_op}"):
+    with st.form(key=f"form_v6_{sel_op}"):
         col_a, col_b = st.columns(2)
         with col_a:
             new_pwd = st.text_input("Hasło logowania:", value=cfg.get("password", ""))
-            key_idx = st.number_input("Klucz API (0=Auto, 1-5=Stały)", 0, 5, value=int(cfg.get("assigned_key_index", 0)))
+            
+            # --- NOWOŚĆ: CZYTELNY WYBÓR KLUCZA ---
+            # Pobieramy listę projektów z secrets
+            gcp_list = st.secrets.get("GCP_PROJECT_IDS", [])
+            if isinstance(gcp_list, str): gcp_list = [gcp_list]
+            
+            # Budujemy opcje
+            key_options = ["0 - Automatyczna rotacja (Load Balancer)"]
+            for i, p_id in enumerate(gcp_list):
+                key_options.append(f"{i+1} - Projekt: {p_id}")
+            
+            # Ustalamy aktualny indeks
+            current_key_val = int(cfg.get("assigned_key_index", 0))
+            # Zabezpieczenie przed błędem indeksu
+            current_idx = current_key_val if current_key_val <= len(gcp_list) else 0
+            
+            selected_key_str = st.selectbox("Przypisany projekt Vertex AI:", key_options, index=current_idx)
+            # Wyciągamy sam numer do zapisu
+            key_choice = int(selected_key_str.split(" - ")[0])
+
             app_files = ["app.py", "app2.py", "app_vertex.py", "app_test.py"]
             cur_file = cfg.get("app_file", "app.py")
             new_app_file = st.selectbox("Plik aplikacji:", app_files, index=app_files.index(cur_file) if cur_file in app_files else 0)
+            
             roles = ["Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"]
             cur_role = cfg.get("role", "Operatorzy_DE")
             role_sel = st.selectbox("Rola:", roles, index=roles.index(cur_role) if cur_role in roles else 0)
+        
         with col_b:
             new_msg = st.text_area("Wiadomość dla operatora:", value=cfg.get("admin_message", ""), height=150)
             st.write(f"Status odczytu: {'✅ Odczytano' if cfg.get('message_read', False) else '🔴 Nieodczytano'}")
@@ -193,12 +218,12 @@ with tab_config:
         if st.form_submit_button("💾 Zapisz ustawienia"):
             msg_changed = new_msg != cfg.get("admin_message", "")
             cfg_ref.set({
-                "password": new_pwd, "assigned_key_index": key_idx, "role": role_sel,
+                "password": new_pwd, "assigned_key_index": key_choice, "role": role_sel,
                 "admin_message": new_msg, "app_file": new_app_file,
                 "message_read": False if msg_changed else cfg.get("message_read", False),
                 "updated_at": firestore.SERVER_TIMESTAMP
             }, merge=True)
-            st.success("Zapisano!")
+            st.success(f"Zapisano zmiany dla {sel_op}!")
             st.rerun()
 
 # ==========================================
@@ -208,7 +233,18 @@ with tab_keys:
     st.title("🔑 Monitor Zużycia Kluczy")
     today_str = today.strftime("%Y-%m-%d")
     key_stats = db.collection("key_usage").document(today_str).get().to_dict() or {}
-    k_data = [{"Klucz": f"Klucz {i}", "Zużycie": key_stats.get(str(i), 0), "Limit": 250} for i in range(1, 6)]
+    
+    # Pobieramy nazwy projektów do wyświetlenia
+    gcp_list = st.secrets.get("GCP_PROJECT_IDS", [])
+    if isinstance(gcp_list, str): gcp_list = [gcp_list]
+
+    k_data = []
+    for i in range(1, 6):
+        usage = key_stats.get(str(i), 0)
+        # Próbujemy dopasować nazwę projektu
+        proj_name = gcp_list[i-1] if i-1 < len(gcp_list) else "Brak projektu"
+        k_data.append({"Klucz": f"Klucz {i}", "Projekt": proj_name, "Zużycie": usage})
+    
     df_keys = pd.DataFrame(k_data)
     st.bar_chart(df_keys.set_index("Klucz")["Zużycie"])
     st.table(df_keys)
