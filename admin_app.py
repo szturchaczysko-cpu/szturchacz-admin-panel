@@ -39,7 +39,8 @@ if not check_password(): st.stop()
 # ==========================================
 tab_stats, tab_config, tab_keys = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja Operatorów", "🔑 Stan Kluczy"])
 
-OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"]
+# --- POPRAWIONA LISTA OPERATORÓW ---
+OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta", "EwelinaG", "Andrzej"]
 
 # ==========================================
 # 📊 ZAKŁADKA 1: STATYSTYKI
@@ -184,23 +185,21 @@ with tab_config:
         with col_a:
             new_pwd = st.text_input("Hasło logowania:", value=cfg.get("password", ""))
             
-            # --- NOWOŚĆ: CZYTELNY WYBÓR KLUCZA ---
-            # Pobieramy listę projektów z secrets
+            # --- POPRAWIONA LISTA KLUCZY ---
             gcp_list = st.secrets.get("GCP_PROJECT_IDS", [])
-            if isinstance(gcp_list, str): gcp_list = [gcp_list]
+            if not gcp_list:
+                st.error("⚠️ Brak GCP_PROJECT_IDS w secrets Admina! Dodaj je, aby widzieć listę.")
+                key_options = ["0 - Automatyczna rotacja"]
+            else:
+                if isinstance(gcp_list, str): gcp_list = [gcp_list]
+                key_options = ["0 - Automatyczna rotacja (Load Balancer)"]
+                for i, p_id in enumerate(gcp_list):
+                    key_options.append(f"{i+1} - Projekt: {p_id}")
             
-            # Budujemy opcje
-            key_options = ["0 - Automatyczna rotacja (Load Balancer)"]
-            for i, p_id in enumerate(gcp_list):
-                key_options.append(f"{i+1} - Projekt: {p_id}")
-            
-            # Ustalamy aktualny indeks
             current_key_val = int(cfg.get("assigned_key_index", 0))
-            # Zabezpieczenie przed błędem indeksu
-            current_idx = current_key_val if current_key_val <= len(gcp_list) else 0
+            current_idx = current_key_val if current_key_val < len(key_options) else 0
             
             selected_key_str = st.selectbox("Przypisany projekt Vertex AI:", key_options, index=current_idx)
-            # Wyciągamy sam numer do zapisu
             key_choice = int(selected_key_str.split(" - ")[0])
 
             app_files = ["app.py", "app2.py", "app_vertex.py", "app_test.py"]
@@ -223,7 +222,7 @@ with tab_config:
                 "message_read": False if msg_changed else cfg.get("message_read", False),
                 "updated_at": firestore.SERVER_TIMESTAMP
             }, merge=True)
-            st.success(f"Zapisano zmiany dla {sel_op}!")
+            st.success("Zapisano!")
             st.rerun()
 
 # ==========================================
@@ -234,14 +233,12 @@ with tab_keys:
     today_str = today.strftime("%Y-%m-%d")
     key_stats = db.collection("key_usage").document(today_str).get().to_dict() or {}
     
-    # Pobieramy nazwy projektów do wyświetlenia
     gcp_list = st.secrets.get("GCP_PROJECT_IDS", [])
     if isinstance(gcp_list, str): gcp_list = [gcp_list]
 
     k_data = []
     for i in range(1, 6):
         usage = key_stats.get(str(i), 0)
-        # Próbujemy dopasować nazwę projektu
         proj_name = gcp_list[i-1] if i-1 < len(gcp_list) else "Brak projektu"
         k_data.append({"Klucz": f"Klucz {i}", "Projekt": proj_name, "Zużycie": usage})
     
