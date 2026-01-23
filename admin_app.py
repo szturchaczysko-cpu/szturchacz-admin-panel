@@ -9,13 +9,17 @@ import pytz
 # --- 0. KONFIGURACJA ---
 st.set_page_config(page_title="Szturchacz - Admin Hub", layout="wide", page_icon="📊")
 
+# --- INICJALIZACJA BAZY ---
 if not firebase_admin._apps:
     creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
     creds = credentials.Certificate(creds_dict)
     firebase_admin.initialize_app(creds)
 db = firestore.client()
 
-if "password_correct" not in st.session_state: st.session_state.password_correct = False
+# --- BRAMKA HASŁA ---
+if "password_correct" not in st.session_state:
+    st.session_state.password_correct = False
+
 def check_password():
     if st.session_state.password_correct: return True
     st.header("🔒 Logowanie Admin")
@@ -24,12 +28,14 @@ def check_password():
         if pwd == st.secrets["ADMIN_PASSWORD"]:
             st.session_state.password_correct = True
             st.rerun()
-        else: st.error("Błędne hasło")
+        else:
+            st.error("Błędne hasło")
     return False
+
 if not check_password(): st.stop()
 
 tab_stats, tab_config, tab_keys = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja", "🔑 Stan Kluczy"])
-OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta", "EwelinaG", "Andrzej"]
+OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"]
 
 # ==========================================
 # 📊 ZAKŁADKA 1: STATYSTYKI
@@ -47,6 +53,7 @@ with tab_stats:
         st.write("")
         if st.button("🔄 Odśwież dane", type="primary"): st.rerun()
 
+    # --- USTALANIE LISTY DAT ---
     dates_list = []
     if date_mode == "Zakresy":
         r = st.selectbox("Wybierz zakres:", ["Dziś", "Ostatnie 7 dni", "Ostatnie 30 dni"])
@@ -55,12 +62,18 @@ with tab_stats:
     elif date_mode == "Kalendarz":
         dates_list = [st.date_input("Wybierz dzień:", today).strftime("%Y-%m-%d")]
     else:
-        all_stats_refs = db.collection("stats").list_documents()
-        dates_list = [doc.id for doc in all_stats_refs]
+        with st.spinner("Pobieranie historii dat..."):
+            all_stats_refs = db.collection("stats").list_documents()
+            dates_list = [doc.id for doc in all_stats_refs]
 
-    total_sessions, total_diamonds = 0, 0
-    op_summary, all_transitions = {}, {}
-    time_distribution = {f"{h:02d}": 0 for h in range(24)} # Słownik na godziny 00-23
+    num_days = len(dates_list) if len(dates_list) > 0 else 1
+
+    # --- POBIERANIE I AGREGACJA ---
+    total_sessions = 0
+    total_diamonds = 0
+    op_summary = {} 
+    all_transitions = {}
+    hourly_sum = {f"{h:02d}": 0 for h in range(24)}
 
     if dates_list:
         progress_bar = st.progress(0)
@@ -84,18 +97,21 @@ with tab_stats:
                 session_times = data.get("session_times", [])
                 for t in session_times:
                     hour = t.split(":")[0]
-                    time_distribution[hour] += 1
+                    if hour in hourly_sum:
+                        hourly_sum[hour] += 1
                 
                 # 3. Przejścia i Diamenty
+                t_map = data.get("pz_transitions", {})
+                if isinstance(t_map, dict):
+                    for k, v in t_map.items():
+                        display_name = k.replace("_to_", " ➡ ")
+                        all_transitions[display_name] = all_transitions.get(display_name, 0) + v
+                        if k.endswith("_to_PZ6"):
+                            op_summary[name]['d'] += v
+                            total_diamonds += v
+                # Obsługa płaskich kluczy (backup)
                 for key, val in data.items():
-                    if key == "pz_transitions" and isinstance(val, dict):
-                        for t_name, t_count in val.items():
-                            display_name = t_name.replace("_to_", " ➡ ")
-                            all_transitions[display_name] = all_transitions.get(display_name, 0) + t_count
-                            if t_name.endswith("_to_PZ6"):
-                                op_summary[name]['d'] += t_count
-                                total_diamonds += t_count
-                    elif key.startswith("pz_transitions."):
+                    if key.startswith("pz_transitions."):
                         trans_name = key.split("pz_transitions.")[1]
                         display_name = trans_name.replace("_to_", " ➡ ")
                         count = val if isinstance(val, (int, float)) else 0
@@ -105,19 +121,21 @@ with tab_stats:
                             total_diamonds += count
         progress_bar.empty()
 
-    # --- WYŚWIETLANIE ---
+    # --- WYŚWIETLANIE METRYK ---
     st.markdown("---")
-    m1, m2 = st.columns(2)
-    m1.metric("Łączna liczba sesji", total_sessions)
-    m2.metric("Łączna liczba Diamentów 💎", total_diamonds)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Suma sesji (okres)", total_sessions)
+    m2.metric("Średnia sesji / dzień", round(total_sessions / num_days, 2))
+    m3.metric("Suma Diamentów 💎", total_diamonds)
 
-    # --- NOWY WYKRES CZASOWY ---
-    st.subheader("🕒 Rozkład aktywności w ciągu doby")
+    # --- WYKRES ŚREDNIEJ GODZINOWEJ ---
+    st.subheader(f"🕒 Średnia wydajność godzinowa (na podstawie {num_days} dni)")
     if total_sessions > 0:
-        df_time = pd.DataFrame(list(time_distribution.items()), columns=['Godzina', 'Liczba sesji'])
-        st.area_chart(df_time.set_index("Godzina"))
+        hourly_avg = {hour: total / num_days for hour, total in hourly_sum.items()}
+        df_hourly = pd.DataFrame(list(hourly_avg.items()), columns=['Godzina', 'Średnia liczba sesji'])
+        st.area_chart(df_hourly.set_index("Godzina"))
     else:
-        st.info("Brak danych czasowych (zaczną się pojawiać po aktualizacji Szturchacza).")
+        st.info("Brak danych czasowych dla wybranego okresu.")
 
     st.markdown("---")
     c_left, c_right = st.columns(2)
@@ -125,10 +143,11 @@ with tab_stats:
     with c_left:
         st.subheader("🏆 Ranking Operatorów")
         if op_summary:
-            ranking_data = [{"Operator": k, "Sesje": v['s'], "Diamenty 💎": v['d']} for k, v in op_summary.items()]
+            ranking_data = [{"Operator": k, "Suma Sesji": v['s'], "Średnia/Dzień": round(v['s']/num_days, 2), "Diamenty 💎": v['d']} for k, v in op_summary.items()]
             df_ranking = pd.DataFrame(ranking_data).sort_values(by="Diamenty 💎", ascending=False)
             st.dataframe(df_ranking, use_container_width=True, hide_index=True)
-            st.bar_chart(df_ranking.set_index("Operator")["Sesje"])
+            st.bar_chart(df_ranking.set_index("Operator")["Średnia/Dzień"])
+        else: st.info("Brak danych.")
 
     with c_right:
         st.subheader("📈 Przejścia PZ (Postęp)")
@@ -136,6 +155,7 @@ with tab_stats:
             df_tr = pd.DataFrame(list(all_transitions.items()), columns=['Przejście', 'Ilość']).sort_values(by='Ilość', ascending=False)
             st.dataframe(df_tr, use_container_width=True, hide_index=True)
             st.bar_chart(df_tr.set_index("Przejście")["Ilość"])
+        else: st.info("Brak danych.")
 
 # ==========================================
 # ⚙️ ZAKŁADKA 2: KONFIGURACJA
@@ -155,7 +175,7 @@ with tab_config:
     cfg_ref = db.collection("operator_configs").document(sel_op)
     cfg = cfg_ref.get().to_dict() or {}
 
-    with st.form(key=f"form_v4_{sel_op}"):
+    with st.form(key=f"form_v5_{sel_op}"):
         col_a, col_b = st.columns(2)
         with col_a:
             new_pwd = st.text_input("Hasło logowania:", value=cfg.get("password", ""))
