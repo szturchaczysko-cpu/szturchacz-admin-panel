@@ -35,6 +35,7 @@ cfg = cfg_ref.get().to_dict() or {}
 # Wybór projektu (Admin > Losowanie)
 fixed_key_idx = cfg.get("assigned_key_index", 0)
 if fixed_key_idx > 0:
+    # Używamy projektu przypisanego przez Admina (1-5 -> index 0-4)
     idx = min(fixed_key_idx - 1, len(GCP_PROJECTS) - 1)
     st.session_state.vertex_project_index = idx
     is_project_locked = True
@@ -61,11 +62,10 @@ if 'vertex_init_done' not in st.session_state or st.session_state.get('last_proj
         st.error(f"Błąd inicjalizacji Vertex AI ({current_gcp_project}): {e}")
         st.stop()
 
-# --- FUNKCJE POMOCNICZE ---
+# --- FUNKCJE STATYSTYK ---
 def parse_pz(text):
     if not text: return None
-    # Szuka PZ+cyfra (np. PZ0, PZ12, PZ=PZ5)
-    match = re.search(r'(PZ\d+)', text, re.IGNORECASE)
+    match = re.search(r'COP#\s*PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
     if match: return match.group(1).upper()
     return None
 
@@ -83,6 +83,7 @@ def log_stats(op_name, start_pz, end_pz, proj_idx):
         if end_pz == "PZ6":
             db.collection("global_stats").document("totals").collection("operators").document(op_name).set({"total_diamonds": firestore.Increment(1)}, merge=True)
     doc_ref.set(upd, merge=True)
+    # Logujemy zużycie projektu (klucza)
     db.collection("key_usage").document(today).set({str(proj_idx + 1): firestore.Increment(1)}, merge=True)
 
 # ==========================================
@@ -94,15 +95,23 @@ show_diamonds = global_cfg.get("show_diamonds", True)
 with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
+    st.caption(f"📁 Projekt: `{current_gcp_project}`")
+    
+    if is_project_locked:
+        st.info(f"🔒 Projekt stały: {st.session_state.vertex_project_index + 1}")
+    else:
+        st.caption(f"🔄 Projekt (LB): {st.session_state.vertex_project_index + 1}")
+
+    # Diamenty
+    tz_pl = pytz.timezone('Europe/Warsaw')
+    today_s = datetime.now(tz_pl).strftime("%Y-%m-%d")
+    today_data = db.collection("stats").document(today_s).collection("operators").document(op_name).get().to_dict() or {}
+    today_diamonds = sum(v for k, v in today_data.get("pz_transitions", {}).items() if k.endswith("_to_PZ6"))
+    global_data = db.collection("global_stats").document("totals").collection("operators").document(op_name).get().to_dict() or {}
+    all_time_diamonds = global_data.get("total_diamonds", 0)
     
     if show_diamonds:
-        tz_pl = pytz.timezone('Europe/Warsaw')
-        today_s = datetime.now(tz_pl).strftime("%Y-%m-%d")
-        today_data = db.collection("stats").document(today_s).collection("operators").document(op_name).get().to_dict() or {}
-        today_diamonds = sum(v for k, v in today_data.get("pz_transitions", {}).items() if k.endswith("_to_PZ6"))
-        global_data = db.collection("global_stats").document("totals").collection("operators").document(op_name).get().to_dict() or {}
-        all_time_diamonds = global_data.get("total_diamonds", 0)
-        st.markdown(f"### 💎 Zamówieni kurierzy\n**Dziś:** {today_diamonds} | **Łącznie:** {all_time_diamonds}")
+        st.markdown(f"### 💎 Diamenty\n**Dziś:** {today_diamonds} | **Łącznie:** {all_time_diamonds}")
         st.markdown("---")
 
     admin_msg = cfg.get("admin_message", "")
@@ -111,21 +120,30 @@ with st.sidebar:
         if st.button("✅ Odczytałem"):
             db.collection("operator_configs").document(op_name).update({"message_read": True})
             st.rerun()
+    else:
+        if admin_msg:
+            with st.expander("📩 Poprzednia wiadomość"): st.write(admin_msg)
 
     st.markdown("---")
-    st.radio("Model AI:", ["gemini-2.5-pro", "gemini-3.0-pro-preview"], key="selected_model_label")
-    active_model_id = st.session_state.selected_model_label
     
-    # --- PARAMETRY V21 (notag domyślnie TAK) ---
+    # --- TWOJE NAZWY MODELI ---
+    # Mapujemy nazwę wyświetlaną na nazwę techniczną Vertex AI
+    # Uwaga: gemini-2.5-pro to alias dla 1.5-pro-002 w Twoim systemie
+    MODEL_MAP = {
+        "gemini-2.5-pro": "gemini-1.5-pro-002", 
+        "gemini-3.0-pro-preview": "gemini-3.0-pro-preview"
+    }
+    
+    selected_model_display = st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    active_model_id = MODEL_MAP[selected_model_display]
+    
     st.subheader("🧪 Funkcje Eksperymentalne")
-    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True) # <-- USTAWIONE NA TRUE
+    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True)
     st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val", value=False)
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
-    if is_project_locked: st.info(f"🔒 Projekt stały: {st.session_state.vertex_project_index + 1}")
-    else: st.caption(f"🔄 Projekt (LB): {st.session_state.vertex_project_index + 1}")
-
     st.markdown("---")
+    
     TRYBY_DICT = {"Standard": "od_szturchacza", "WA": "WA", "MAIL": "MAIL", "FORUM": "FORUM"}
     st.selectbox("Tryb Startowy:", list(TRYBY_DICT.keys()), key="tryb_label")
     wybrany_tryb_kod = TRYBY_DICT[st.session_state.tryb_label]
@@ -134,6 +152,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_started = False
         st.session_state.current_start_pz = None
+        # Losujemy nowy projekt na nową sprawę (jeśli nie jest zablokowany)
         if not is_project_locked:
             st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
         st.rerun()
@@ -145,19 +164,17 @@ with st.sidebar:
         st.rerun()
 
 # --- GŁÓWNY INTERFEJS ---
-st.title(f"🤖 Szturchacz (Vertex)")
+st.title(f"🤖 Szturchacz (Vertex AI)")
 
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 
 if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
-    # !!! POBIERANIE PROMPTU V21 !!!
     SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT_V21"]
     tz_pl = pytz.timezone('Europe/Warsaw')
     now = datetime.now(tz_pl)
     
-    # Konwersja przełączników na TAK/NIE dla prompta
     p_notag = "TAK" if st.session_state.notag_val else "NIE"
     p_analizbior = "TAK" if st.session_state.analizbior_val else "NIE"
     
@@ -172,6 +189,8 @@ analizbior={p_analizbior}
 """
     FULL_PROMPT = SYSTEM_PROMPT + parametry_startowe
 
+    model = GenerativeModel(active_model_id, system_instruction=FULL_PROMPT)
+
     def get_vertex_history():
         vh = []
         for m in st.session_state.messages[:-1]:
@@ -179,11 +198,9 @@ analizbior={p_analizbior}
             vh.append(Content(role=role, parts=[Part.from_text(m["content"])]))
         return vh
 
-    # Wyświetlanie historii
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-    # Logika odpowiedzi AI
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
         with st.chat_message("model"):
             with st.spinner("Analiza przez Vertex AI..."):
@@ -191,7 +208,6 @@ analizbior={p_analizbior}
                 success = False
                 for attempt in range(max_attempts):
                     try:
-                        model = GenerativeModel(active_model_id, system_instruction=FULL_PROMPT)
                         history = get_vertex_history()
                         chat = model.start_chat(history=history)
                         response = chat.send_message(st.session_state.messages[-1]["content"], generation_config={"temperature": 0.0})
@@ -199,7 +215,6 @@ analizbior={p_analizbior}
                         st.markdown(response.text)
                         st.session_state.messages.append({"role": "model", "content": response.text})
                         
-                        # Logowanie statystyk (obsługa notag=TAK)
                         if (';pz=' in response.text.lower() or 'cop#' in response.text.lower()) and 'c#' in response.text.lower():
                             log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END", st.session_state.vertex_project_index)
                         
