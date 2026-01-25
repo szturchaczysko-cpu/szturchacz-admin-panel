@@ -26,6 +26,16 @@ except:
     st.stop()
 
 # ==========================================
+# 🔑 INICJALIZACJA STANU (W TYM DOMYŚLNY NOTAG)
+# ==========================================
+if "messages" not in st.session_state: st.session_state.messages = []
+if "chat_started" not in st.session_state: st.session_state.chat_started = False
+if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
+# WYMUSZENIE DOMYŚLNEGO NOTAG NA START
+if "notag_val" not in st.session_state:
+    st.session_state.notag_val = True
+
+# ==========================================
 # 🔑 CONFIG I TOŻSAMOŚĆ
 # ==========================================
 op_name = st.session_state.operator
@@ -34,8 +44,9 @@ cfg = cfg_ref.get().to_dict() or {}
 
 # Wybór projektu (Admin > Losowanie)
 fixed_key_idx = cfg.get("assigned_key_index", 0)
-if 0 < fixed_key_idx <= len(GCP_PROJECTS):
-    st.session_state.vertex_project_index = fixed_key_idx - 1
+if fixed_key_idx > 0:
+    idx = min(fixed_key_idx - 1, len(GCP_PROJECTS) - 1)
+    st.session_state.vertex_project_index = idx
     is_project_locked = True
 else:
     is_project_locked = False
@@ -84,13 +95,6 @@ def log_stats(op_name, start_pz, end_pz, proj_idx):
     db.collection("key_usage").document(today).set({str(proj_idx + 1): firestore.Increment(1)}, merge=True)
 
 # ==========================================
-# 🔑 INICJALIZACJA STANU
-# ==========================================
-if "messages" not in st.session_state: st.session_state.messages = []
-if "chat_started" not in st.session_state: st.session_state.chat_started = False
-if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
-
-# ==========================================
 # 🚀 SIDEBAR
 # ==========================================
 global_cfg = db.collection("admin_config").document("global_settings").get().to_dict() or {}
@@ -100,6 +104,13 @@ with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
     
+    # --- JASNA IDENTYFIKACJA PROJEKTU ---
+    if is_project_locked:
+        st.info(f"🔒 PROJEKT PRZYPISANY: {st.session_state.vertex_project_index + 1}")
+    else:
+        st.caption(f"🔄 PROJEKT (LOSOWY): {st.session_state.vertex_project_index + 1}")
+    st.code(current_gcp_project) # Wyświetla ID projektu z Twojej listy
+
     if show_diamonds:
         tz_pl = pytz.timezone('Europe/Warsaw')
         today_s = datetime.now(tz_pl).strftime("%Y-%m-%d")
@@ -116,28 +127,25 @@ with st.sidebar:
         if st.button("✅ Odczytałem"):
             db.collection("operator_configs").document(op_name).update({"message_read": True})
             st.rerun()
-    else:
-        if admin_msg:
-            with st.expander("📩 Poprzednia wiadomość"): st.write(admin_msg)
 
     st.markdown("---")
-    MODEL_UI_MAP = {
-        "gemini-2.5-pro": "gemini-2.5-pro", 
+    st.radio("Model AI:", ["gemini-2.5-pro", "gemini-3.0-pro-preview"], key="selected_model_label")
+    
+    # Mapowanie nazw UI na techniczne ID Vertex AI (zapobiega błędom 404)
+    MODEL_ID_MAP = {
+        "gemini-2.5-pro": "gemini-2.5-pro",
         "gemini-3.0-pro-preview": "gemini-3.0-pro-preview"
     }
-    selected_label = st.radio("Model AI:", list(MODEL_UI_MAP.keys()), key="selected_model_label")
-    active_model_id = MODEL_UI_MAP[selected_label]
+    active_model_id = MODEL_ID_MAP[st.session_state.selected_model_label]
     
+    # --- PARAMETRY V21 (notag domyślnie TAK) ---
     st.subheader("🧪 Funkcje Eksperymentalne")
-    # --- FIX: notag_val domyślnie na True przez parametr value ---
     st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True)
     st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val", value=False)
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
-    if is_project_locked: st.info(f"🔒 Projekt stały: {st.session_state.vertex_project_index + 1}")
-    else: st.caption(f"🔄 Projekt (LB): {st.session_state.vertex_project_index + 1}")
-
     st.markdown("---")
+    
     TRYBY_DICT = {"Standard": "od_szturchacza", "WA": "WA", "MAIL": "MAIL", "FORUM": "FORUM"}
     st.selectbox("Tryb Startowy:", list(TRYBY_DICT.keys()), key="tryb_label")
     wybrany_tryb_kod = TRYBY_DICT[st.session_state.tryb_label]
@@ -146,6 +154,8 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_started = False
         st.session_state.current_start_pz = None
+        # Przy resecie wymuszamy powrót do domyślnego NOTAG
+        st.session_state.notag_val = True
         if not is_project_locked:
             st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
         st.rerun()
@@ -157,18 +167,19 @@ with st.sidebar:
         st.rerun()
 
 # --- GŁÓWNY INTERFEJS ---
-st.title(f"🤖 Szturchacz (Vertex AI)")
+st.title(f"🤖 Szturchacz (Vertex)")
 
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 
 if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
+    # !!! POBIERANIE PROMPTU V21 !!!
     SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT_V21"]
     tz_pl = pytz.timezone('Europe/Warsaw')
     now = datetime.now(tz_pl)
     
-    # Konwersja stanu na TAK/NIE
+    # Konwersja przełączników na TAK/NIE dla prompta
     p_notag = "TAK" if st.session_state.notag_val else "NIE"
     p_analizbior = "TAK" if st.session_state.analizbior_val else "NIE"
     
@@ -192,12 +203,14 @@ analizbior={p_analizbior}
             vh.append(Content(role=role, parts=[Part.from_text(m["content"])]))
         return vh
 
+    # Wyświetlanie historii
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
+    # Logika odpowiedzi AI
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
         with st.chat_message("model"):
-            with st.spinner("Analiza przez Vertex..."):
+            with st.spinner("Analiza przez Vertex AI..."):
                 max_attempts = 3
                 success = False
                 for attempt in range(max_attempts):
@@ -209,6 +222,7 @@ analizbior={p_analizbior}
                         st.markdown(response.text)
                         st.session_state.messages.append({"role": "model", "content": response.text})
                         
+                        # Logowanie statystyk (obsługa notag=TAK)
                         if (';pz=' in response.text.lower() or 'cop#' in response.text.lower()) and 'c#' in response.text.lower():
                             log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END", st.session_state.vertex_project_index)
                         
@@ -216,7 +230,7 @@ analizbior={p_analizbior}
                         break
                     except Exception as e:
                         if "429" in str(e) or "Quota" in str(e):
-                            st.toast(f"⏳ Limit minuty (429). Próba {attempt+1}/{max_attempts}...")
+                            st.toast(f"⏳ Limit minuty. Próba {attempt+1}/{max_attempts}...")
                             time.sleep(5)
                         else:
                             st.error(f"Błąd Vertex AI: {e}")
