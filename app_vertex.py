@@ -33,16 +33,17 @@ cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
 
 # Wybór projektu (Admin > Losowanie)
-fixed_key_idx = cfg.get("assigned_key_index", 0)
+fixed_key_idx = int(cfg.get("assigned_key_index", 0))
 if fixed_key_idx > 0:
-    idx = min(fixed_key_idx - 1, len(GCP_PROJECTS) - 1)
-    st.session_state.vertex_project_index = idx
+    # Wymuszamy indeks z bazy (1-4 -> 0-3)
+    st.session_state.vertex_project_index = min(fixed_key_idx - 1, len(GCP_PROJECTS) - 1)
     is_project_locked = True
 else:
     is_project_locked = False
     if "vertex_project_index" not in st.session_state:
         st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
 
+# Pobieramy ID projektu DOPIERO po ustaleniu indeksu
 current_gcp_project = GCP_PROJECTS[st.session_state.vertex_project_index]
 
 # Inicjalizacja Vertex AI
@@ -95,6 +96,7 @@ with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
     st.code(f"Projekt: {current_gcp_project}")
+    
     
     if show_diamonds:
         tz_pl = pytz.timezone('Europe/Warsaw')
