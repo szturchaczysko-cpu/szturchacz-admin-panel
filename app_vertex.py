@@ -32,22 +32,20 @@ op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
 
-# --- LOGIKA WYBORU PROJEKTU (ADMIN > LOSOWANIE) ---
+# Wybór projektu (Admin > Losowanie)
 fixed_key_idx = cfg.get("assigned_key_index", 0)
 if 0 < fixed_key_idx <= len(GCP_PROJECTS):
-    # Wybór Admina: 1-4 odpowiada indeksom 0-3
-    st.session_state.vertex_project_index = fixed_key_idx - 1
+    idx = min(fixed_key_idx - 1, len(GCP_PROJECTS) - 1)
+    st.session_state.vertex_project_index = idx
     is_project_locked = True
 else:
-    # Auto-balancer: losowanie jeśli nie przypisano na sztywno
     is_project_locked = False
     if "vertex_project_index" not in st.session_state:
         st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
 
-# Nazwa fizyczna projektu z listy
 current_gcp_project = GCP_PROJECTS[st.session_state.vertex_project_index]
 
-# Inicjalizacja Vertex AI dla wybranego projektu
+# Inicjalizacja Vertex AI
 if 'vertex_init_done' not in st.session_state or st.session_state.get('last_project') != current_gcp_project:
     try:
         creds_info = json.loads(st.secrets["FIREBASE_CREDS"])
@@ -84,8 +82,18 @@ def log_stats(op_name, start_pz, end_pz, proj_idx):
         if end_pz == "PZ6":
             db.collection("global_stats").document("totals").collection("operators").document(op_name).set({"total_diamonds": firestore.Increment(1)}, merge=True)
     doc_ref.set(upd, merge=True)
-    # Zliczamy użycie pod numerem projektu 1-4
     db.collection("key_usage").document(today).set({str(proj_idx + 1): firestore.Increment(1)}, merge=True)
+
+# ==========================================
+# 🔑 INICJALIZACJA STANU (DOMYŚLNY NOTAG)
+# ==========================================
+if "messages" not in st.session_state: st.session_state.messages = []
+if "chat_started" not in st.session_state: st.session_state.chat_started = False
+if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
+
+# --- TO JEST KLUCZ DO DOMYŚLNEGO NOTAG ---
+if "notag_val" not in st.session_state:
+    st.session_state.notag_val = True
 
 # ==========================================
 # 🚀 SIDEBAR
@@ -96,14 +104,14 @@ show_diamonds = global_cfg.get("show_diamonds", True)
 with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
+    st.caption(f"📁 Projekt: `{current_gcp_project}`")
     
-    # Jasna informacja o wybranym projekcie
     if is_project_locked:
-        st.info(f"🔒 PROJEKT PRZYPISANY: {st.session_state.vertex_project_index + 1}")
+        st.info(f"🔒 Projekt stały: {st.session_state.vertex_project_index + 1}")
     else:
-        st.caption(f"🔄 PROJEKT (LOSOWY): {st.session_state.vertex_project_index + 1}")
-    st.code(current_gcp_project) # Wyświetlenie ID projektu pod numerkiem
+        st.caption(f"🔄 Projekt (LB): {st.session_state.vertex_project_index + 1}")
 
+    # Diamenty
     if show_diamonds:
         tz_pl = pytz.timezone('Europe/Warsaw')
         today_s = datetime.now(tz_pl).strftime("%Y-%m-%d")
@@ -125,24 +133,21 @@ with st.sidebar:
             with st.expander("📩 Poprzednia wiadomość"): st.write(admin_msg)
 
     st.markdown("---")
-    
-    # --- WYBÓR MODELU (NAPRAWIONA MAPA DLA VERTEX) ---
-    MODEL_UI_MAP = {
-        "gemini-2.5-pro": "gemini-2.5-pro", # Twoje UI -> Techniczna nazwa Vertex
+    MODEL_MAP = {
+        "gemini-2.5-pro": "gemini-2.5-pro", 
         "gemini-3.0-pro-preview": "gemini-3.0-pro-preview"
     }
-    
-    selected_label = st.radio("Model AI:", list(MODEL_UI_MAP.keys()), key="selected_model_label")
-    active_model_id = MODEL_UI_MAP[selected_label]
+    selected_model_display = st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    active_model_id = MODEL_MAP[selected_model_display]
     
     st.subheader("🧪 Funkcje Eksperymentalne")
-    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True)
+    # Przełącznik NOTAG (korzysta z session_state zainicjalizowanego jako True)
+    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val")
     st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val", value=False)
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
-    st.caption(f"🌡️ Temp: 0.0")
-
     st.markdown("---")
+    
     TRYBY_DICT = {"Standard": "od_szturchacza", "WA": "WA", "MAIL": "MAIL", "FORUM": "FORUM"}
     st.selectbox("Tryb Startowy:", list(TRYBY_DICT.keys()), key="tryb_label")
     wybrany_tryb_kod = TRYBY_DICT[st.session_state.tryb_label]
@@ -151,6 +156,8 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_started = False
         st.session_state.current_start_pz = None
+        # Przy resecie przywracamy domyślny NOTAG
+        st.session_state.notag_val = True
         if not is_project_locked:
             st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
         st.rerun()
@@ -196,14 +203,12 @@ analizbior={p_analizbior}
             vh.append(Content(role=role, parts=[Part.from_text(m["content"])]))
         return vh
 
-    # Wyświetlanie historii
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-    # Logika odpowiedzi AI
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
         with st.chat_message("model"):
-            with st.spinner("Analiza przez Vertex..."):
+            with st.spinner("Analiza przez Vertex AI..."):
                 max_attempts = 3
                 success = False
                 for attempt in range(max_attempts):
@@ -222,7 +227,7 @@ analizbior={p_analizbior}
                         break
                     except Exception as e:
                         if "429" in str(e) or "Quota" in str(e):
-                            st.toast(f"⏳ Limit minuty (429). Próba {attempt+1}/{max_attempts}...")
+                            st.toast(f"⏳ Limit minuty. Próba {attempt+1}/{max_attempts}...")
                             time.sleep(5)
                         else:
                             st.error(f"Błąd Vertex AI: {e}")
