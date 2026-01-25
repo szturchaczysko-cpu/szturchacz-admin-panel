@@ -86,18 +86,6 @@ def log_stats(op_name, start_pz, end_pz, proj_idx):
     db.collection("key_usage").document(today).set({str(proj_idx + 1): firestore.Increment(1)}, merge=True)
 
 # ==========================================
-# 🔑 INICJALIZACJA STANU (DOMYŚLNY NOTAG)
-# ==========================================
-if "messages" not in st.session_state: st.session_state.messages = []
-if "chat_started" not in st.session_state: st.session_state.chat_started = False
-if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
-    if "notag_val" not in st.session_state: st.session_state.notag_val = True
-
-# WYMUSZENIE DOMYŚLNEGO NOTAG NA START # <--- DODANE
-if "notag_val" not in st.session_state:
-    st.session_state.notag_val = True
-
-# ==========================================
 # 🚀 SIDEBAR
 # ==========================================
 global_cfg = db.collection("admin_config").document("global_settings").get().to_dict() or {}
@@ -106,9 +94,6 @@ show_diamonds = global_cfg.get("show_diamonds", True)
 with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
-    st.code(f"Projekt: {current_gcp_project}")
-    st.code(f"Projekt: {current_gcp_project}") # <--- DODANE (Widoczność ID projektu)
-
     
     if show_diamonds:
         tz_pl = pytz.timezone('Europe/Warsaw')
@@ -149,10 +134,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_started = False
         st.session_state.current_start_pz = None
-        st.session_state.notag_val = True
-        st.session_state.notag_val = True # <--- DODANE (Reset do domyślnego NOTAG)
-
-      if not is_project_locked:
+        if not is_project_locked:
             st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
         st.rerun()
 
