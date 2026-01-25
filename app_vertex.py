@@ -26,16 +26,6 @@ except:
     st.stop()
 
 # ==========================================
-# 🔑 INICJALIZACJA STANU (W TYM DOMYŚLNY NOTAG)
-# ==========================================
-if "messages" not in st.session_state: st.session_state.messages = []
-if "chat_started" not in st.session_state: st.session_state.chat_started = False
-if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
-# WYMUSZENIE DOMYŚLNEGO NOTAG NA START
-if "notag_val" not in st.session_state:
-    st.session_state.notag_val = True
-
-# ==========================================
 # 🔑 CONFIG I TOŻSAMOŚĆ
 # ==========================================
 op_name = st.session_state.operator
@@ -74,6 +64,7 @@ if 'vertex_init_done' not in st.session_state or st.session_state.get('last_proj
 # --- FUNKCJE POMOCNICZE ---
 def parse_pz(text):
     if not text: return None
+    # Szuka PZ+cyfra (np. PZ0, PZ12, PZ=PZ5)
     match = re.search(r'(PZ\d+)', text, re.IGNORECASE)
     if match: return match.group(1).upper()
     return None
@@ -104,13 +95,6 @@ with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
     
-    # --- JASNA IDENTYFIKACJA PROJEKTU ---
-    if is_project_locked:
-        st.info(f"🔒 PROJEKT PRZYPISANY: {st.session_state.vertex_project_index + 1}")
-    else:
-        st.caption(f"🔄 PROJEKT (LOSOWY): {st.session_state.vertex_project_index + 1}")
-    st.code(current_gcp_project) # Wyświetla ID projektu z Twojej listy
-
     if show_diamonds:
         tz_pl = pytz.timezone('Europe/Warsaw')
         today_s = datetime.now(tz_pl).strftime("%Y-%m-%d")
@@ -130,22 +114,18 @@ with st.sidebar:
 
     st.markdown("---")
     st.radio("Model AI:", ["gemini-2.5-pro", "gemini-3.0-pro-preview"], key="selected_model_label")
-    
-    # Mapowanie nazw UI na techniczne ID Vertex AI (zapobiega błędom 404)
-    MODEL_ID_MAP = {
-        "gemini-2.5-pro": "gemini-2.5-pro",
-        "gemini-3.0-pro-preview": "gemini-3.0-pro-preview"
-    }
-    active_model_id = MODEL_ID_MAP[st.session_state.selected_model_label]
+    active_model_id = st.session_state.selected_model_label
     
     # --- PARAMETRY V21 (notag domyślnie TAK) ---
     st.subheader("🧪 Funkcje Eksperymentalne")
-    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True)
+    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True) # <-- USTAWIONE NA TRUE
     st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val", value=False)
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
+    if is_project_locked: st.info(f"🔒 Projekt stały: {st.session_state.vertex_project_index + 1}")
+    else: st.caption(f"🔄 Projekt (LB): {st.session_state.vertex_project_index + 1}")
+
     st.markdown("---")
-    
     TRYBY_DICT = {"Standard": "od_szturchacza", "WA": "WA", "MAIL": "MAIL", "FORUM": "FORUM"}
     st.selectbox("Tryb Startowy:", list(TRYBY_DICT.keys()), key="tryb_label")
     wybrany_tryb_kod = TRYBY_DICT[st.session_state.tryb_label]
@@ -154,8 +134,6 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_started = False
         st.session_state.current_start_pz = None
-        # Przy resecie wymuszamy powrót do domyślnego NOTAG
-        st.session_state.notag_val = True
         if not is_project_locked:
             st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
         st.rerun()
@@ -194,8 +172,6 @@ analizbior={p_analizbior}
 """
     FULL_PROMPT = SYSTEM_PROMPT + parametry_startowe
 
-    model = GenerativeModel(active_model_id, system_instruction=FULL_PROMPT)
-
     def get_vertex_history():
         vh = []
         for m in st.session_state.messages[:-1]:
@@ -215,6 +191,7 @@ analizbior={p_analizbior}
                 success = False
                 for attempt in range(max_attempts):
                     try:
+                        model = GenerativeModel(active_model_id, system_instruction=FULL_PROMPT)
                         history = get_vertex_history()
                         chat = model.start_chat(history=history)
                         response = chat.send_message(st.session_state.messages[-1]["content"], generation_config={"temperature": 0.0})
