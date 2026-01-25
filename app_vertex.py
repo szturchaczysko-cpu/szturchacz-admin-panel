@@ -94,6 +94,7 @@ show_diamonds = global_cfg.get("show_diamonds", True)
 with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
+    st.code(f"Projekt: {current_gcp_project}")
     
     if show_diamonds:
         tz_pl = pytz.timezone('Europe/Warsaw')
