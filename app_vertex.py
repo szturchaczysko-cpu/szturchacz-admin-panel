@@ -91,6 +91,7 @@ def log_stats(op_name, start_pz, end_pz, proj_idx):
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
+    if "notag_val" not in st.session_state: st.session_state.notag_val = True
 
 # WYMUSZENIE DOMYŚLNEGO NOTAG NA START # <--- DODANE
 if "notag_val" not in st.session_state:
@@ -105,6 +106,7 @@ show_diamonds = global_cfg.get("show_diamonds", True)
 with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
+    st.code(f"Projekt: {current_gcp_project}")
     st.code(f"Projekt: {current_gcp_project}") # <--- DODANE (Widoczność ID projektu)
 
     
@@ -147,6 +149,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_started = False
         st.session_state.current_start_pz = None
+        st.session_state.notag_val = True
         st.session_state.notag_val = True # <--- DODANE (Reset do domyślnego NOTAG)
 
       if not is_project_locked:
