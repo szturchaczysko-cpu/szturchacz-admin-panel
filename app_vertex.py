@@ -28,27 +28,21 @@ except:
 # ==========================================
 # 🔑 CONFIG I TOŻSAMOŚĆ
 # ==========================================
-# Wymuszenie NOTAG na TAK przy każdym odświeżeniu
-if "notag_val" not in st.session_state or st.session_state.notag_val is False:
-    st.session_state.notag_val = True
 op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
-# Wymuszenie NOTAG na TAK przy każdym odświeżeniu
-if "notag_val" not in st.session_state:
-    st.session_state.notag_val = True
+
 # Wybór projektu (Admin > Losowanie)
-fixed_key_idx = int(cfg.get("assigned_key_index", 0))
+fixed_key_idx = cfg.get("assigned_key_index", 0)
 if fixed_key_idx > 0:
-    # Wymuszamy indeks z bazy (1-4 -> 0-3)
-    st.session_state.vertex_project_index = min(fixed_key_idx - 1, len(GCP_PROJECTS) - 1)
+    idx = min(fixed_key_idx - 1, len(GCP_PROJECTS) - 1)
+    st.session_state.vertex_project_index = idx
     is_project_locked = True
 else:
     is_project_locked = False
     if "vertex_project_index" not in st.session_state:
         st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
 
-# Pobieramy ID projektu DOPIERO po ustaleniu indeksu
 current_gcp_project = GCP_PROJECTS[st.session_state.vertex_project_index]
 
 # Inicjalizacja Vertex AI
@@ -100,8 +94,6 @@ show_diamonds = global_cfg.get("show_diamonds", True)
 with st.sidebar:
     st.title(f"👤 {op_name}")
     st.success(f"🚀 SILNIK: VERTEX AI")
-    st.code(f"Projekt: {current_gcp_project}")
-    
     
     if show_diamonds:
         tz_pl = pytz.timezone('Europe/Warsaw')
@@ -121,15 +113,12 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    st.radio("Model AI:", ["gemini-2.5-pro", "gemini-2.5-flash"], key="selected_model_label")
+    st.radio("Model AI:", ["gemini-2.5-pro", "gemini-3.0-pro-preview"], key="selected_model_label")
     active_model_id = st.session_state.selected_model_label
     
     # --- PARAMETRY V21 (notag domyślnie TAK) ---
     st.subheader("🧪 Funkcje Eksperymentalne")
-
-# Używamy zmiennej z session_state, którą zainicjowaliśmy na górze jako True
-st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val")
-    
+    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True) # <-- USTAWIONE NA TRUE
     st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val", value=False)
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
@@ -164,7 +153,7 @@ if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
     # !!! POBIERANIE PROMPTU V21 !!!
-    SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT"]
+    SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT_V21"]
     tz_pl = pytz.timezone('Europe/Warsaw')
     now = datetime.now(tz_pl)
     
