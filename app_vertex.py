@@ -28,6 +28,9 @@ except:
 # ==========================================
 # 🔑 CONFIG I TOŻSAMOŚĆ
 # ==========================================
+# Wymuszenie NOTAG na TAK przy każdym odświeżeniu
+if "notag_val" not in st.session_state or st.session_state.notag_val is False:
+    st.session_state.notag_val = True
 op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
