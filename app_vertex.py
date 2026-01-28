@@ -156,7 +156,7 @@ if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
     # !!! POBIERANIE PROMPTU V21 !!!
-    SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT_V21"]
+    SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT"]
     tz_pl = pytz.timezone('Europe/Warsaw')
     now = datetime.now(tz_pl)
     
