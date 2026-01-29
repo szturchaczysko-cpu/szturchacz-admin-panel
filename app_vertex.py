@@ -149,11 +149,32 @@ st.title(f"🤖 Szturchacz (Vertex)")
 
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 
+
+# --- FUNKCJA POBIERANIA PROMPTU Z GITHUB ---
+@st.cache_data(ttl=3600)  # Cache na 1 godzinę
+def get_remote_prompt(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        st.error(f"Błąd pobierania promptu z GitHub: {e}")
+        return ""
+
+# TWÓJ LINK RAW Z GITHUBA (Wklej tutaj swój link):
+PROMPT_URL = "https://raw.githubusercontent.com/szturchaczysko-cpu/szturchacz/refs/heads/main/prompt4622.txt"
+
+
 if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
     # !!! POBIERANIE PROMPTU V21 !!!
-    SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT_V21"]
+ # !!! POBIERANIE PROMPTU Z GITHUB ZAMIAST SECRETS !!!
+    SYSTEM_PROMPT = get_remote_prompt(PROMPT_URL)
+    
+    if not SYSTEM_PROMPT:
+        st.error("Nie udało się załadować promptu. Aplikacja wstrzymana.")
+        st.stop()
     tz_pl = pytz.timezone('Europe/Warsaw')
     now = datetime.now(tz_pl)
     
