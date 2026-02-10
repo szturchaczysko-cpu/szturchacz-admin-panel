@@ -40,7 +40,7 @@ if not check_password(): st.stop()
 tab_stats, tab_config, tab_keys = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja Operatorów", "🔑 Stan Kluczy"])
 
 # --- POPRAWIONA LISTA OPERATORÓW ---
-OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta", "EwelinaG", "Andrzej", "Romana"]
+OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta", "EwelinaG", "Andrzej", "Romana", "Kasia"]
 
 # ==========================================
 # 📊 ZAKŁADKA 1: STATYSTYKI
