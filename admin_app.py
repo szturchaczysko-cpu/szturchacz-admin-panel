@@ -35,12 +35,28 @@ def check_password():
 if not check_password(): st.stop()
 
 # ==========================================
-# 📑 ZAKŁADKI
+# 🔑 ZAKŁADKI
 # ==========================================
 tab_stats, tab_config, tab_keys = st.tabs(["📊 Statystyki i Diamenty", "⚙️ Konfiguracja Operatorów", "🔑 Stan Kluczy"])
 
-# --- POPRAWIONA LISTA OPERATORÓW ---
+# --- LISTA OPERATORÓW ---
 OPERATORS = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta", "EwelinaG", "Andrzej", "Romana", "Kasia"]
+
+# --- LISTA PROJEKTÓW GCP (z secrets) ---
+try:
+    GCP_PROJECTS = st.secrets.get("GCP_PROJECT_IDS", [])
+    if isinstance(GCP_PROJECTS, str):
+        GCP_PROJECTS = [GCP_PROJECTS]
+    GCP_PROJECTS = list(GCP_PROJECTS)
+except:
+    GCP_PROJECTS = []
+
+# --- LISTA URL-i PROMPTÓW (zdefiniowana tutaj, łatwa do edycji) ---
+PROMPT_URLS = {
+    "Prompt Stabilny (prompt4623)": "https://raw.githubusercontent.com/szturchaczysko-cpu/szturchacz/refs/heads/main/prompt4623.txt",
+    # Dodaj tutaj kolejne prompty gdy będą gotowe, np.:
+    # "Prompt Testowy V2": "https://raw.githubusercontent.com/szturchaczysko-cpu/szturchacz/refs/heads/main/prompt_v2.txt",
+}
 
 # ==========================================
 # 📊 ZAKŁADKA 1: STATYSTYKI
@@ -62,7 +78,7 @@ with tab_stats:
     dates_list = []
     if date_mode == "Zakresy":
         r = st.selectbox("Wybierz zakres:", ["Dziś", "Ostatnie 7 dni", "Ostatnie 30 dni"])
-        days = 1 if r == "Dziś" else (7 if r == "7 dni" else 30)
+        days = 1 if r == "Dziś" else (7 if r == "Ostatnie 7 dni" else 30)
         dates_list = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
     elif date_mode == "Kalendarz":
         dates_list = [st.date_input("Wybierz dzień:", today).strftime("%Y-%m-%d")]
@@ -134,7 +150,7 @@ with tab_stats:
     m3.metric("Suma Diamentów 💎", total_diamonds)
 
     # --- WYKRES ŚREDNIEJ GODZINOWEJ ---
-    st.subheader(f"🕒 Średnia wydajność godzinowa (na podstawie {num_days} dni)")
+    st.subheader(f"🕐 Średnia wydajność godzinowa (na podstawie {num_days} dni)")
     if total_sessions > 0:
         hourly_avg = {hour: total / num_days for hour, total in hourly_sum.items()}
         df_hourly = pd.DataFrame(list(hourly_avg.items()), columns=['Godzina', 'Średnia liczba sesji'])
@@ -176,36 +192,100 @@ with tab_config:
         st.rerun()
 
     st.markdown("---")
+    
+    # --- ZARZĄDZANIE LISTĄ PROMPTÓW ---
+    st.subheader("📝 Zarządzanie URL-ami Promptów")
+    st.caption("Poniżej widzisz zdefiniowane prompty. Aby dodać nowy, edytuj słownik PROMPT_URLS w kodzie admin_app.py lub dodaj przez formularz poniżej.")
+    
+    # Pobierz custom prompts z bazy (oprócz hardcoded)
+    custom_prompts_ref = db.collection("admin_config").document("custom_prompts")
+    custom_prompts_data = custom_prompts_ref.get().to_dict() or {}
+    custom_prompt_urls = custom_prompts_data.get("urls", {})
+    
+    # Połącz hardcoded + custom
+    ALL_PROMPT_URLS = {**PROMPT_URLS, **custom_prompt_urls}
+    
+    with st.expander("➕ Dodaj nowy URL promptu"):
+        new_prompt_name = st.text_input("Nazwa promptu (np. 'Prompt Testowy V2'):")
+        new_prompt_url = st.text_input("URL raw z GitHuba:")
+        if st.button("Dodaj prompt"):
+            if new_prompt_name and new_prompt_url:
+                custom_prompt_urls[new_prompt_name] = new_prompt_url
+                custom_prompts_ref.set({"urls": custom_prompt_urls}, merge=True)
+                st.success(f"Dodano: {new_prompt_name}")
+                st.rerun()
+            else:
+                st.error("Wypełnij oba pola!")
+    
+    # Pokaż listę wszystkich promptów
+    if ALL_PROMPT_URLS:
+        st.write("**Dostępne prompty:**")
+        for name, url in ALL_PROMPT_URLS.items():
+            st.caption(f"• **{name}** → `{url[:80]}...`" if len(url) > 80 else f"• **{name}** → `{url}`")
+
+    st.markdown("---")
+    
+    # --- EDYCJA OPERATORA ---
     sel_op = st.selectbox("Wybierz operatora do edycji:", OPERATORS, key="op_cfg_sel")
     cfg_ref = db.collection("operator_configs").document(sel_op)
     cfg = cfg_ref.get().to_dict() or {}
 
-    with st.form(key=f"form_v6_{sel_op}"):
+    with st.form(key=f"form_v7_{sel_op}"):
         col_a, col_b = st.columns(2)
         with col_a:
             new_pwd = st.text_input("Hasło logowania:", value=cfg.get("password", ""))
             
-            # --- POPRAWIONA LISTA KLUCZY ---
-            gcp_list = st.secrets.get("GCP_PROJECT_IDS", [])
-            if not gcp_list:
-                st.error("⚠️ Brak GCP_PROJECT_IDS w secrets Admina! Dodaj je, aby widzieć listę.")
-                key_options = ["0 - Automatyczna rotacja"]
+            # --- PRZYPISANIE PROJEKTU GCP (NA SZTYWNO) ---
+            if not GCP_PROJECTS:
+                st.error("⚠️ Brak GCP_PROJECT_IDS w secrets Admina!")
+                key_options = ["1 - Brak projektów w konfiguracji"]
             else:
-                if isinstance(gcp_list, str): gcp_list = [gcp_list]
-                key_options = ["0 - Automatyczna rotacja (Load Balancer)"]
-                for i, p_id in enumerate(gcp_list):
-                    key_options.append(f"{i+1} - Projekt: {p_id}")
+                key_options = []
+                for i, p_id in enumerate(GCP_PROJECTS):
+                    key_options.append(f"{i+1} - {p_id}")
             
-            current_key_val = int(cfg.get("assigned_key_index", 0))
-            current_idx = current_key_val if current_key_val < len(key_options) else 0
+            # Aktualnie przypisany projekt
+            current_key_val = int(cfg.get("assigned_key_index", 1))
+            # Upewnij się że indeks jest w zakresie
+            if current_key_val < 1 or current_key_val > len(key_options):
+                current_key_val = 1
+            current_idx = current_key_val - 1
             
-            selected_key_str = st.selectbox("Przypisany projekt Vertex AI:", key_options, index=current_idx)
+            selected_key_str = st.selectbox(
+                "🔑 Przypisany projekt Vertex AI:", 
+                key_options, 
+                index=current_idx,
+                help="Projekt jest przypisany na sztywno. Operator zawsze korzysta z tego projektu."
+            )
             key_choice = int(selected_key_str.split(" - ")[0])
-
-            app_files = ["app.py", "app2.py", "app_vertex.py", "app_test.py"]
-            cur_file = cfg.get("app_file", "app.py")
-            new_app_file = st.selectbox("Plik aplikacji:", app_files, index=app_files.index(cur_file) if cur_file in app_files else 0)
             
+            # Pokaż co jest aktualnie
+            if GCP_PROJECTS and current_key_val >= 1:
+                proj_name = GCP_PROJECTS[current_key_val - 1] if current_key_val - 1 < len(GCP_PROJECTS) else "?"
+                st.info(f"Aktualnie: **{proj_name}** (Klucz {current_key_val})")
+
+            # --- PRZYPISANIE PROMPTU (NA SZTYWNO) ---
+            prompt_names = list(ALL_PROMPT_URLS.keys())
+            if not prompt_names:
+                prompt_names = ["Brak promptów"]
+            
+            current_prompt_url = cfg.get("prompt_url", "")
+            # Znajdź aktualny prompt po URL
+            current_prompt_idx = 0
+            for i, name in enumerate(prompt_names):
+                if ALL_PROMPT_URLS.get(name) == current_prompt_url:
+                    current_prompt_idx = i
+                    break
+            
+            selected_prompt_name = st.selectbox(
+                "📄 Przypisany prompt:",
+                prompt_names,
+                index=current_prompt_idx,
+                help="Prompt jest przypisany na sztywno. Operator korzysta z tego promptu."
+            )
+            selected_prompt_url = ALL_PROMPT_URLS.get(selected_prompt_name, "")
+            
+            # --- ROLA ---
             roles = ["Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"]
             cur_role = cfg.get("role", "Operatorzy_DE")
             role_sel = st.selectbox("Rola:", roles, index=roles.index(cur_role) if cur_role in roles else 0)
@@ -213,16 +293,29 @@ with tab_config:
         with col_b:
             new_msg = st.text_area("Wiadomość dla operatora:", value=cfg.get("admin_message", ""), height=150)
             st.write(f"Status odczytu: {'✅ Odczytano' if cfg.get('message_read', False) else '🔴 Nieodczytano'}")
+            
+            st.markdown("---")
+            st.write("**Podgląd konfiguracji:**")
+            st.json({
+                "operator": sel_op,
+                "projekt_gcp": GCP_PROJECTS[key_choice - 1] if GCP_PROJECTS and key_choice >= 1 and key_choice <= len(GCP_PROJECTS) else "?",
+                "prompt": selected_prompt_name,
+                "rola": cur_role,
+            })
         
         if st.form_submit_button("💾 Zapisz ustawienia"):
             msg_changed = new_msg != cfg.get("admin_message", "")
             cfg_ref.set({
-                "password": new_pwd, "assigned_key_index": key_choice, "role": role_sel,
-                "admin_message": new_msg, "app_file": new_app_file,
+                "password": new_pwd,
+                "assigned_key_index": key_choice,
+                "prompt_url": selected_prompt_url,
+                "prompt_name": selected_prompt_name,
+                "role": role_sel,
+                "admin_message": new_msg,
                 "message_read": False if msg_changed else cfg.get("message_read", False),
                 "updated_at": firestore.SERVER_TIMESTAMP
             }, merge=True)
-            st.success("Zapisano!")
+            st.success(f"✅ Zapisano konfigurację dla {sel_op}!")
             st.rerun()
 
 # ==========================================
@@ -233,15 +326,34 @@ with tab_keys:
     today_str = today.strftime("%Y-%m-%d")
     key_stats = db.collection("key_usage").document(today_str).get().to_dict() or {}
     
-    gcp_list = st.secrets.get("GCP_PROJECT_IDS", [])
-    if isinstance(gcp_list, str): gcp_list = [gcp_list]
-
     k_data = []
-    for i in range(1, 6):
+    for i in range(1, len(GCP_PROJECTS) + 1):
         usage = key_stats.get(str(i), 0)
-        proj_name = gcp_list[i-1] if i-1 < len(gcp_list) else "Brak projektu"
+        proj_name = GCP_PROJECTS[i-1] if i-1 < len(GCP_PROJECTS) else "Brak projektu"
         k_data.append({"Klucz": f"Klucz {i}", "Projekt": proj_name, "Zużycie": usage})
     
-    df_keys = pd.DataFrame(k_data)
-    st.bar_chart(df_keys.set_index("Klucz")["Zużycie"])
-    st.table(df_keys)
+    if k_data:
+        df_keys = pd.DataFrame(k_data)
+        st.bar_chart(df_keys.set_index("Klucz")["Zużycie"])
+        st.table(df_keys)
+    else:
+        st.warning("Brak projektów GCP w konfiguracji.")
+    
+    # --- PODGLĄD PRZYPISAŃ OPERATORÓW ---
+    st.markdown("---")
+    st.subheader("👥 Przypisania Operatorów")
+    assignments = []
+    for op in OPERATORS:
+        op_cfg = db.collection("operator_configs").document(op).get().to_dict() or {}
+        ki = int(op_cfg.get("assigned_key_index", 0))
+        proj = GCP_PROJECTS[ki - 1] if GCP_PROJECTS and 1 <= ki <= len(GCP_PROJECTS) else "Nieprzypisany"
+        prompt_name = op_cfg.get("prompt_name", "Brak")
+        assignments.append({
+            "Operator": op,
+            "Klucz": ki,
+            "Projekt GCP": proj,
+            "Prompt": prompt_name,
+            "Rola": op_cfg.get("role", "-")
+        })
+    df_assign = pd.DataFrame(assignments)
+    st.dataframe(df_assign, use_container_width=True, hide_index=True)
